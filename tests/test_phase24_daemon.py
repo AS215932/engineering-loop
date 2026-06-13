@@ -24,6 +24,14 @@ from hyrule_engineering_loop.promotion import rollback_promotions, setup_worktre
 from hyrule_engineering_loop.state import GraphState
 
 
+@pytest.fixture(autouse=True)
+def _no_github_actions(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The daemon refuses to run when GITHUB_ACTIONS is set (the CI-runner
+    # guard). CI itself sets GITHUB_ACTIONS=true, so clear it here; the
+    # dedicated refusal test sets it back explicitly.
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+
+
 def _run(command: list[str], cwd: Path) -> None:
     completed = subprocess.run(command, cwd=cwd, capture_output=True, check=False, text=True)
     assert completed.returncode == 0, completed.stderr
