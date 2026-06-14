@@ -37,9 +37,19 @@ uvx ruff check src tests
 
 ```bash
 uv run hyrule-engineering-loop --help
-# one operations-lane cycle over the loop:approved queue:
+# one operations-lane cycle over the core AS215932 loop:approved queues:
 uv run hyrule-engineering-loop daemon --once
 ```
+
+The daemon's default production scope is the seven core repos:
+`engineering-loop`, `network-operations`, `hyrule-cloud`, `hyrule-web`,
+`hyrule-mcp`, `noc-agent`, and `hyrule-network-proxy`. It runs low-and-slow by
+default: at most 2 runs/day, $10/day, and docs-only mutation boundaries unless
+a later reviewed PR widens them.
+
+The dedicated `loop` VM sets `HYRULE_MODEL_POLICY_FILE` to
+`configs/loop/model-policy.production.yml` after the operator completes Pi auth;
+local tests keep using the root `model-policy.yml` mock backend.
 
 ## Safety
 
