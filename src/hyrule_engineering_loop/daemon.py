@@ -42,6 +42,26 @@ Publisher: TypeAlias = Callable[..., list[dict[str, Any]]]
 
 DEFAULT_LOCK_MAX_AGE_SECONDS = 2 * 60 * 60
 
+CORE_REPOS: tuple[str, ...] = (
+    "AS215932/engineering-loop",
+    "AS215932/network-operations",
+    "AS215932/hyrule-cloud",
+    "AS215932/hyrule-web",
+    "AS215932/hyrule-mcp",
+    "AS215932/noc-agent",
+    "AS215932/hyrule-network-proxy",
+)
+
+REPO_CHECKOUT_NAMES: dict[str, str] = {
+    "engineering-loop": "engineering-loop",
+    "network-operations": "hyrule-infra",
+    "noc-agent": "hyrule-noc-agent",
+    "hyrule-cloud": "hyrule-cloud",
+    "hyrule-web": "hyrule-web",
+    "hyrule-mcp": "hyrule-mcp",
+    "hyrule-network-proxy": "hyrule-network-proxy",
+}
+
 LABEL_CHANGE_CLASSES: dict[str, ChangeClass] = {
     "bug": "app_bugfix",
     "firewall": "firewall_policy",
@@ -62,15 +82,15 @@ class DaemonError(RuntimeError):
 class DaemonConfig:
     """One-cycle configuration; everything has an env-overridable default."""
 
-    repos: tuple[str, ...] = ("AS215932/network-operations",)
+    repos: tuple[str, ...] = CORE_REPOS
     workspace_root: Path = Path("/home/svag/Dev")
     output_root: Path = Path("/tmp/hyrule-loop-daemon")
     state_dir: Path = Path(".engineering-loop-state/daemon")
     memory_dir: str | None = None
     allowed_paths: tuple[str, ...] = ("docs",)
     remote: str = "origin"
-    max_runs_per_day: int = 6
-    max_cost_usd_per_day: float = 25.0
+    max_runs_per_day: int = 2
+    max_cost_usd_per_day: float = 10.0
     max_iterations_per_run: int = 20
     max_wall_clock_minutes_per_run: int = 45
     max_cost_usd_per_run: float = 5.0
@@ -273,9 +293,7 @@ def classify_issue(item: IntakeItem) -> tuple[ChangeClass, RiskLevel]:
 def repo_name_for_issue(item: IntakeItem) -> str:
     """Map a GitHub repo onto the sibling checkout directory name."""
     short = item.repo.rsplit("/", 1)[-1]
-    if short == "network-operations":
-        return "hyrule-infra"
-    return short
+    return REPO_CHECKOUT_NAMES.get(short, short)
 
 
 def _issue_body(item: IntakeItem, *, client: GhClient) -> str:

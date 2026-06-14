@@ -10,6 +10,7 @@ from typing import Any, cast
 import pytest
 
 from hyrule_engineering_loop.daemon import (
+    CORE_REPOS,
     DaemonConfig,
     DaemonReport,
     acquire_lock,
@@ -17,6 +18,7 @@ from hyrule_engineering_loop.daemon import (
     daemon_once,
     notify_discord,
     notify_icinga,
+    repo_name_for_issue,
 )
 from hyrule_engineering_loop.intake import IntakeItem
 from hyrule_engineering_loop.nodes import STALL_ROUND_LIMIT, delegate_implementation_node
@@ -191,6 +193,38 @@ def test_idle_queue_reports_idle(tmp_path: Path) -> None:
     )
     report = daemon_once(config, client=FakeGh({"issue list": "[]"}))
     assert report.outcome == "idle"
+
+
+def test_daemon_defaults_to_core_repos_and_low_and_slow_budget() -> None:
+    config = DaemonConfig()
+    assert config.repos == CORE_REPOS
+    assert config.max_runs_per_day == 2
+    assert config.max_cost_usd_per_day == 10.0
+    assert config.allowed_paths == ("docs",)
+
+
+def test_repo_name_for_issue_maps_core_repo_checkout_names() -> None:
+    cases = {
+        "AS215932/engineering-loop": "engineering-loop",
+        "AS215932/network-operations": "hyrule-infra",
+        "AS215932/hyrule-cloud": "hyrule-cloud",
+        "AS215932/hyrule-web": "hyrule-web",
+        "AS215932/hyrule-mcp": "hyrule-mcp",
+        "AS215932/noc-agent": "hyrule-noc-agent",
+        "AS215932/hyrule-network-proxy": "hyrule-network-proxy",
+    }
+    for repo, checkout in cases.items():
+        item = IntakeItem(
+            repo=repo,
+            number=1,
+            title="t",
+            url="u",
+            labels=("loop:approved",),
+            updated_at="",
+            score=0.0,
+            body_complete=True,
+        )
+        assert repo_name_for_issue(item) == checkout
 
 
 # --- AC2: per-run budget exhaustion is journaled, next run unaffected -------

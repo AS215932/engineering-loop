@@ -25,11 +25,21 @@ EnvironmentFile=/opt/engineering-loop/.env
 # the loop's GH token for `gh`, and any model/provider keys. It must NOT
 # contain production Vault tokens or fleet SSH material — the backend env
 # is scrubbed, but keep the surface minimal.
+Environment=HYRULE_MODEL_POLICY_FILE=/opt/engineering-loop/configs/loop/model-policy.production.yml
 ExecStart=/opt/engineering-loop/.venv/bin/hyrule-engineering-loop daemon --once \
-    --workspace-root /opt/engineering-loop/workspace \
+    --repo AS215932/engineering-loop \
+    --repo AS215932/network-operations \
+    --repo AS215932/hyrule-cloud \
+    --repo AS215932/hyrule-web \
+    --repo AS215932/hyrule-mcp \
+    --repo AS215932/noc-agent \
+    --repo AS215932/hyrule-network-proxy \
+    --workspace-root /var/lib/engineering-loop/workspace \
     --output-root /var/lib/engineering-loop/runs \
     --state-dir-path /var/lib/engineering-loop/state \
-    --memory-dir /opt/engineering-loop/workspace/hyrule-infra/memory
+    --memory-dir /var/lib/engineering-loop/workspace/hyrule-infra/memory \
+    --max-runs-per-day 2 \
+    --max-cost-usd-per-day 10
 # A run never blocks the next timer fire indefinitely; the daemon enforces
 # its own per-run wall-clock budget, this is the hard backstop.
 TimeoutStartSec=3600

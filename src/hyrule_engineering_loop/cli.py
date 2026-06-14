@@ -10,7 +10,7 @@ from typing import Any, cast
 from langgraph.checkpoint.memory import MemorySaver
 
 from hyrule_engineering_loop.canary import CanaryDryRunError, run_sibling_repo_canary
-from hyrule_engineering_loop.daemon import DaemonConfig, daemon_once
+from hyrule_engineering_loop.daemon import CORE_REPOS, DaemonConfig, daemon_once
 from hyrule_engineering_loop.feature import (
     FeatureIntakeError,
     FeaturePreflightError,
@@ -452,6 +452,7 @@ def backend_canary_command(args: argparse.Namespace) -> int:
 
 
 DEFAULT_INTAKE_REPO = "AS215932/network-operations"
+DEFAULT_INTAKE_REPOS = list(CORE_REPOS)
 
 
 def daemon_command(args: argparse.Namespace) -> int:
@@ -502,7 +503,7 @@ def intake_scan_command(args: argparse.Namespace) -> int:
 
 def intake_queue_command(args: argparse.Namespace) -> int:
     client = GhCli()
-    repos = args.repo or [DEFAULT_INTAKE_REPO]
+    repos = args.repo or DEFAULT_INTAKE_REPOS
     approved = list_issues_with_label(repos, APPROVED_LABEL, client=client)
     candidates = list_issues_with_label(repos, CANDIDATE_LABEL, client=client)
     payload = {
@@ -526,7 +527,7 @@ def intake_queue_command(args: argparse.Namespace) -> int:
 
 
 def intake_labels_command(args: argparse.Namespace) -> int:
-    repos = args.repo or [DEFAULT_INTAKE_REPO]
+    repos = args.repo or DEFAULT_INTAKE_REPOS
     if not args.apply:
         print(f"would create {CANDIDATE_LABEL} and {APPROVED_LABEL} in: {', '.join(repos)}")
         print("re-run with --apply to create them")

@@ -52,15 +52,22 @@ def default_workspace_root() -> Path:
 
 
 def discover_hyrule_repositories(workspace_root: str | Path | None = None) -> dict[str, Path]:
-    """Discover sibling ``hyrule-*`` git checkouts."""
+    """Discover AS215932 sibling git checkouts.
+
+    The production loop workspace includes the existing ``hyrule-*`` app repo
+    convention plus the dedicated ``engineering-loop`` checkout and the
+    infrastructure checkout, usually named ``hyrule-infra`` (with
+    ``network-operations`` accepted for operator-local workspaces).
+    """
     root = Path(workspace_root).expanduser().resolve() if workspace_root else default_workspace_root()
     repos: dict[str, Path] = {}
     if not root.exists():
         raise RepoAdapterError(f"repo workspace root does not exist: {root}")
 
-    for candidate in sorted(root.glob("hyrule-*")):
-        if candidate.is_dir() and (candidate / ".git").exists():
-            repos[candidate.name] = candidate.resolve()
+    for pattern in ("hyrule-*", "engineering-loop", "network-operations"):
+        for candidate in sorted(root.glob(pattern)):
+            if candidate.is_dir() and (candidate / ".git").exists():
+                repos[candidate.name] = candidate.resolve()
     return repos
 
 

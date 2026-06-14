@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 
 from hyrule_engineering_loop.cli import main
-from hyrule_engineering_loop.repo_adapter import RepoAdapterError, verify_repository
+from hyrule_engineering_loop.repo_adapter import (
+    RepoAdapterError,
+    discover_hyrule_repositories,
+    verify_repository,
+)
 from hyrule_engineering_loop.promotion import rollback_promotions
 
 
@@ -132,3 +136,21 @@ def test_repo_adapter_refuses_dirty_target_repo(tmp_path: Path) -> None:
 
     with pytest.raises(RepoAdapterError, match="uncommitted changes"):
         verify_repository(repo)
+
+
+def test_discovery_includes_engineering_loop_and_infra_checkout_names(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    _init_repo(workspace_root / "engineering-loop")
+    _init_repo(workspace_root / "hyrule-infra")
+    _init_repo(workspace_root / "hyrule-cloud")
+    _init_repo(workspace_root / "network-operations")
+
+    discovered = discover_hyrule_repositories(workspace_root)
+
+    assert set(discovered) >= {
+        "engineering-loop",
+        "hyrule-infra",
+        "hyrule-cloud",
+        "network-operations",
+    }
