@@ -102,6 +102,22 @@ def test_pi_backend_allows_only_model_provider_keys(monkeypatch: pytest.MonkeyPa
     assert set(env_hygiene_violations(env)) == PI_PROVIDER_ENV_NAMES
 
 
+def test_prompt_includes_full_request_body_not_just_intent() -> None:
+    # The planner's intent is a truncated one-liner (often just the title); the
+    # backend must still see the full issue body (action items + constraints).
+    spec = TaskSpec(
+        change_id="FULL_BODY",
+        change_class="app_feature",
+        risk_level="low",
+        request="# Title\n\n## Action items\n1. Add field payment_status.\n\n## Constraints\nNo generic payment engine.",
+        allowed_paths={"hyrule-cloud": ("hyrule_cloud",)},
+        intent="feat: title only",
+    )
+    prompt = assemble_backend_prompt(spec, BackendConstraints(max_iterations=5))
+    assert "Add field payment_status." in prompt
+    assert "No generic payment engine." in prompt
+
+
 def test_subprocess_backend_command_assembly_and_refusals(tmp_path: Path) -> None:
     spec = TaskSpec(
         change_id="CMD_ASSEMBLY",

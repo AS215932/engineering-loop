@@ -249,7 +249,10 @@ def assemble_backend_prompt(task_spec: TaskSpec, constraints: BackendConstraints
         "",
         "## Request",
         "",
-        task_spec.intent.rstrip() or task_spec.request.rstrip() or "(no request text supplied)",
+        # Prefer the full request body (the issue text) over the planner's
+        # one-line intent summary, so the backend sees the complete spec —
+        # action items, constraints, and acceptance — not just the title.
+        task_spec.request.rstrip() or task_spec.intent.rstrip() or "(no request text supplied)",
     ]
     if task_spec.acceptance_criteria:
         lines.extend(["", "## Acceptance criteria (the definition of done)", ""])
