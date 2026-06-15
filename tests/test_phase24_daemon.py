@@ -201,6 +201,43 @@ def test_daemon_defaults_to_core_repos_and_low_and_slow_budget() -> None:
     assert config.max_runs_per_day == 2
     assert config.max_cost_usd_per_day == 10.0
     assert config.allowed_paths == ("docs",)
+    assert config.allowed_paths_by_repo == {}
+
+
+def _capture_allowed_paths(tmp_path: Path, config_kwargs: dict[str, Any], repo: str = "AS215932/hyrule-cloud") -> dict[str, Any]:
+    captured: dict[str, Any] = {}
+
+    def runner(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"final_state": {}, "state_path": str(tmp_path / "state.json")}
+
+    config = DaemonConfig(repos=(repo,), state_dir=tmp_path / "state", output_root=tmp_path / "runs", **config_kwargs)
+    gh = FakeGh({"issue list": _approved_issue_json(1, repo=repo, labels=["loop:approved"]), "issue view": json.dumps({"body": "x"})})
+    daemon_once(config, client=gh, feature_runner=runner)
+    return captured
+
+
+def test_daemon_allowed_paths_default_is_docs_only(tmp_path: Path) -> None:
+    captured = _capture_allowed_paths(tmp_path, {})
+    assert captured["repo_name"] == "hyrule-cloud"
+    assert captured["allowed_paths"] == ["docs"]
+
+
+def test_daemon_allowed_paths_per_repo_override(tmp_path: Path) -> None:
+    captured = _capture_allowed_paths(
+        tmp_path, {"allowed_paths_by_repo": {"hyrule-cloud": ("hyrule_cloud", "tests", "docs")}}
+    )
+    assert captured["allowed_paths"] == ["hyrule_cloud", "tests", "docs"]
+
+
+def test_daemon_allowed_paths_unlisted_repo_falls_back_to_docs(tmp_path: Path) -> None:
+    # An override for one repo must not widen a different repo.
+    captured = _capture_allowed_paths(
+        tmp_path,
+        {"allowed_paths_by_repo": {"hyrule-web": ("hyrule_web",)}},
+        repo="AS215932/hyrule-cloud",
+    )
+    assert captured["allowed_paths"] == ["docs"]
 
 
 def test_repo_name_for_issue_maps_core_repo_checkout_names() -> None:
