@@ -28,5 +28,9 @@ defaults:
   allowed_pr_remotes:
     - "origin"
   allowed_handoff_dirs:
+    # CI/tests run with TMPDIR under /tmp.
     - "/tmp"
+    # Production loop VM writes per-change handoffs under its --output-root
+    # (engineering_loop_runs_dir); see network-operations host_vars/loop.yml.
+    - "/var/lib/engineering-loop/runs"
 repos: {}

@@ -390,6 +390,40 @@ def test_unchanged_diff_across_rounds_aborts_to_signoff(tmp_path: Path) -> None:
     rollback_promotions(worktrees)
 
 
+# --- worktree self-heal -----------------------------------------------------
+
+
+def test_setup_worktrees_self_heals_stale_worktree(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _init_repo(workspace / "hyrule-cloud")
+
+    def _fresh_state() -> GraphState:
+        return cast(
+            GraphState,
+            {
+                "change_id": "STALE_TEST",
+                "promotion_enabled": True,
+                "promotion_repositories": {"hyrule-cloud": str(workspace / "hyrule-cloud")},
+                "promotion_worktree_root": str(tmp_path / "worktrees"),
+                "promotion_branch_prefix": "hyrule-feature",
+            },
+        )
+
+    # First setup creates the branch-backed worktree.
+    first = setup_worktrees_for_state(_fresh_state())
+    worktree_path = Path(first[0]["worktree_path"])
+    assert worktree_path.is_dir()
+
+    # A crashed run leaves the worktree + branch on disk. A brand-new state
+    # (no recorded worktree_results) must self-heal and recreate rather than
+    # raising "worktree path already exists", which would wedge every retry.
+    second = setup_worktrees_for_state(_fresh_state())
+    assert Path(second[0]["worktree_path"]).is_dir()
+    assert second[0]["branch"] == first[0]["branch"]
+    rollback_promotions(second)
+
+
 # --- reporting helpers ------------------------------------------------------
 
 
