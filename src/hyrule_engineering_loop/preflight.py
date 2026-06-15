@@ -113,8 +113,16 @@ def preflight_feature_state(
             )
 
     backend_selection = select_backend_for_state(state)
-    backend_env = scrubbed_backend_env()
-    leaked = env_hygiene_violations(backend_env)
+    backend_instance = create_backend(backend_selection.name, command=backend_selection.command)
+    backend_extra_env = (
+        backend_instance.extra_env_names
+        if isinstance(backend_instance, SubprocessBackend)
+        else frozenset()
+    )
+    backend_env = scrubbed_backend_env(allow_names=backend_extra_env)
+    leaked = env_hygiene_violations(
+        backend_env, allowed_secret_names=backend_extra_env
+    )
     checks.append(
         _check(
             "backend_env_hygiene",
@@ -125,7 +133,6 @@ def preflight_feature_state(
     backend_spec = task_spec_from_state(state)
     backend_constraints = constraints_from_state(state)
     backend_prompt = assemble_backend_prompt(backend_spec, backend_constraints)
-    backend_instance = create_backend(backend_selection.name, command=backend_selection.command)
     command_preview: list[str] | None = None
     if isinstance(backend_instance, SubprocessBackend):
         command_preview = backend_instance.build_command(

@@ -37,9 +37,10 @@ DEFAULT_MAX_WALL_CLOCK_SECONDS = 1800.0
 
 KNOWN_BACKENDS = ("mock", "pi", "claude-code")
 
-# Environment hygiene: the backend gets the repo and its toolchain, nothing
-# else. Allowlist, not denylist — anything not named here never reaches the
-# backend process (no Vault, no fleet SSH agent, no provider API keys).
+# Environment hygiene: the backend gets the repo, its toolchain, and only the
+# model-provider credentials the selected harness needs. Allowlist, not denylist
+# — anything not named here never reaches the backend process (no Vault, GitHub,
+# fleet SSH agent, cloud, or app runtime credentials).
 ENV_ALLOWED_NAMES = frozenset(
     {
         "PATH",
@@ -59,6 +60,13 @@ ENV_ALLOWED_NAMES = frozenset(
 ENV_ALLOWED_PREFIXES = ("LC_",)
 ENV_DENIED_PATTERN = re.compile(
     r"(?i)(token|secret|passwd|password|api[_-]?key|vault|ssh|aws_|credential)"
+)
+PI_PROVIDER_ENV_NAMES = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+    }
 )
 
 
@@ -181,9 +189,21 @@ def scrubbed_backend_env(*, allow_names: frozenset[str] | set[str] | None = None
     return env
 
 
-def env_hygiene_violations(env: Mapping[str, str]) -> list[str]:
-    """Return env var names that look credential-bearing (defense in depth)."""
-    return sorted(key for key in env if ENV_DENIED_PATTERN.search(key))
+def env_hygiene_violations(
+    env: Mapping[str, str],
+    *,
+    allowed_secret_names: frozenset[str] | set[str] | None = None,
+) -> list[str]:
+    """Return credential-looking env var names not explicitly allowed.
+
+    Real harnesses need model-provider API keys to call their selected model.
+    Those keys are allowed only when the backend class opts in by exact name;
+    Vault, GitHub, SSH, cloud, and application credentials remain blocked.
+    """
+    allowed = frozenset(allowed_secret_names or ())
+    return sorted(
+        key for key in env if key not in allowed and ENV_DENIED_PATTERN.search(key)
+    )
 
 
 def loop_repo_root() -> Path:
@@ -601,7 +621,7 @@ class SubprocessBackend:
         prompt = assemble_backend_prompt(task_spec, constraints)
         command = self.build_command(prompt=prompt, constraints=constraints)
         env = scrubbed_backend_env(allow_names=self.extra_env_names)
-        leaked = env_hygiene_violations(env)
+        leaked = env_hygiene_violations(env, allowed_secret_names=self.extra_env_names)
         if leaked:
             return _result("failed", error=f"backend env hygiene violation: {', '.join(leaked)}")
 
@@ -700,6 +720,7 @@ class PiBackend(SubprocessBackend):
 
     name = "pi"
     default_command = ("pi", "--print", "{prompt}")
+    extra_env_names = PI_PROVIDER_ENV_NAMES
 
 
 class ClaudeCodeBackend(SubprocessBackend):
