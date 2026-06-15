@@ -12,6 +12,7 @@ import pytest
 from hyrule_engineering_loop.backend import (
     BackendConstraints,
     ClaudeCodeBackend,
+    PI_PROVIDER_ENV_NAMES,
     PiBackend,
     TaskSpec,
     assemble_backend_prompt,
@@ -78,6 +79,27 @@ def test_env_hygiene_scrubs_credentials(monkeypatch: pytest.MonkeyPatch) -> None
     assert "AWS_SECRET_ACCESS_KEY" not in env
     assert "PATH" in env
     assert env_hygiene_violations(env) == []
+
+
+def test_pi_backend_allows_only_model_provider_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-openrouter")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    monkeypatch.setenv("GH_TOKEN", "github-token")
+    monkeypatch.setenv("VAULT_TOKEN", "vault-token")
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/run/agent.sock")
+
+    env = scrubbed_backend_env(allow_names=PiBackend.extra_env_names)
+
+    for key in PI_PROVIDER_ENV_NAMES:
+        assert env[key]
+    assert "GH_TOKEN" not in env
+    assert "VAULT_TOKEN" not in env
+    assert "SSH_AUTH_SOCK" not in env
+    assert env_hygiene_violations(
+        env, allowed_secret_names=PiBackend.extra_env_names
+    ) == []
+    assert set(env_hygiene_violations(env)) == PI_PROVIDER_ENV_NAMES
 
 
 def test_subprocess_backend_command_assembly_and_refusals(tmp_path: Path) -> None:
