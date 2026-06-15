@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "id": "domain-policy-hyrule-host-product-doc",
+  "family": "domain-policy",
+  "title": "hyrule.host product-domain doc note is safe",
+  "input": {
+    "issue_title": "Document hyrule.host as the customer product domain",
+    "issue_body": "Add a docs note that hyrule.host is where customers reach their VMs.",
+    "repo": "AS215932/network-operations",
+    "changed_paths": [
+      "docs/products.md"
+    ]
+  },
+  "must_include": [
+    "hyrule.host is the product identity"
+  ],
+  "must_not_include": [
+    "reject"
+  ],
+  "expected_decision": "approve",
+  "tags": [
+    "domain"
+  ]
+}

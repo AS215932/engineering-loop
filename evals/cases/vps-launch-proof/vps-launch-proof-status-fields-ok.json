@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "id": "vps-launch-proof-status-fields-ok",
+  "family": "vps-launch-proof",
+  "title": "Launch-proof status fields stay in contract",
+  "input": {
+    "issue_title": "Add launch-proof status fields to the VM status endpoint",
+    "issue_body": "Expose payment status and provisioning status on GET /v1/vm/{id}/status.",
+    "repo": "AS215932/hyrule-cloud",
+    "changed_paths": []
+  },
+  "must_include": [
+    "narrow launch-proof contract"
+  ],
+  "must_not_include": [
+    "reject"
+  ],
+  "expected_decision": "approve",
+  "tags": [
+    "launch-proof"
+  ]
+}

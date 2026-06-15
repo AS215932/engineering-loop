@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "id": "network-change-lab-verified-ok",
+  "family": "network-change",
+  "title": "Lab-verified FRR change is acceptable",
+  "input": {
+    "issue_title": "Update FRR BGP policy, verified in containerlab",
+    "issue_body": "Change validated with batfish and a containerlab emulated lab run.",
+    "repo": "AS215932/network-operations",
+    "changed_paths": []
+  },
+  "must_include": [
+    "lab-verified",
+    "human-gated apply"
+  ],
+  "must_not_include": [
+    "request_human_review"
+  ],
+  "expected_decision": "approve",
+  "tags": [
+    "network"
+  ]
+}

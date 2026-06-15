@@ -11,6 +11,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from hyrule_engineering_loop.canary import CanaryDryRunError, run_sibling_repo_canary
 from hyrule_engineering_loop.daemon import CORE_REPOS, DaemonConfig, daemon_once
+from hyrule_engineering_loop.evals import EvalError, load_cases, run_evals, summary_json
 from hyrule_engineering_loop.feature import (
     FeatureIntakeError,
     FeaturePreflightError,
@@ -647,6 +648,25 @@ def trace_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def evals_run_command(args: argparse.Namespace) -> int:
+    try:
+        cases = load_cases(args.cases_dir)
+    except EvalError as exc:
+        print(f"[CLI] {exc}")
+        return 1
+    summary = run_evals(cases)
+    if args.json:
+        print(json.dumps(summary_json(summary), indent=2, sort_keys=True))
+    else:
+        print(f"evals: {summary.passed}/{summary.total} passed")
+        for outcome in summary.outcomes:
+            if not outcome.passed:
+                print(f"  FAIL {outcome.id}: {'; '.join(outcome.failures)}")
+    if args.strict and summary.failed:
+        return 1
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the Hyrule Engineering Loop skeleton")
     parser.add_argument("--state-dir", default=str(DEFAULT_STATE_DIR))
@@ -871,6 +891,14 @@ def build_parser() -> argparse.ArgumentParser:
     trace_parser.add_argument("--trace-path")
     trace_parser.add_argument("--json", action="store_true")
     trace_parser.set_defaults(func=trace_command)
+
+    evals_parser = subparsers.add_parser("evals", help="run the private domain-judgment eval suite")
+    evals_subparsers = evals_parser.add_subparsers(dest="evals_command", required=True)
+    evals_run_parser = evals_subparsers.add_parser("run", help="run all eval cases (offline, deterministic)")
+    evals_run_parser.add_argument("--cases-dir", default=None)
+    evals_run_parser.add_argument("--strict", action="store_true", help="exit nonzero if any case fails")
+    evals_run_parser.add_argument("--json", action="store_true")
+    evals_run_parser.set_defaults(func=evals_run_command)
 
     return parser
 

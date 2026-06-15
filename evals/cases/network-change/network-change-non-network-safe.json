@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "id": "network-change-non-network-safe",
+  "family": "network-change",
+  "title": "Non-network change has no network risk",
+  "input": {
+    "issue_title": "Fix a typo in the README",
+    "issue_body": "Fix a small typo in the README.",
+    "repo": "AS215932/network-operations",
+    "changed_paths": [
+      "README.md"
+    ]
+  },
+  "must_include": [
+    "no risky network surface"
+  ],
+  "must_not_include": [
+    "reject"
+  ],
+  "expected_decision": "approve",
+  "tags": [
+    "network"
+  ]
+}

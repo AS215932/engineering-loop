@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "id": "noc-evidence-noop-guard-ok",
+  "family": "noc-evidence",
+  "title": "No-op rollback guard with evidence is safe",
+  "input": {
+    "issue_title": "Install a no-op rollback guard for the proposed remediation",
+    "issue_body": "Prepare a noop rollback guard with evidence and operator approval; no real action.",
+    "repo": "AS215932/noc-agent",
+    "changed_paths": []
+  },
+  "must_include": [
+    "no-op rollback guard",
+    "safe to proceed"
+  ],
+  "must_not_include": [
+    "reject"
+  ],
+  "expected_decision": "approve",
+  "tags": [
+    "noc"
+  ]
+}

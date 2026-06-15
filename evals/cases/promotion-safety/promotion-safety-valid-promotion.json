@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "id": "promotion-safety-valid-promotion",
+  "family": "promotion-safety",
+  "title": "Promoting via promote-apps is safe",
+  "input": {
+    "issue_title": "Promote hyrule-cloud via promote-apps",
+    "issue_body": "Run promote-apps and let app-promotion-deploy call apply.yml after CI passes.",
+    "repo": "AS215932/network-operations",
+    "changed_paths": [
+      "promotion/app-sha-pins"
+    ]
+  },
+  "must_include": [
+    "follows the promotion path"
+  ],
+  "must_not_include": [
+    "reject"
+  ],
+  "expected_decision": "approve",
+  "tags": [
+    "promotion"
+  ]
+}
