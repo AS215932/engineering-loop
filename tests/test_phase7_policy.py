@@ -187,3 +187,21 @@ def test_policy_denies_non_allowlisted_repo_root(tmp_path: Path) -> None:
     violations = validate_graph_state(state)
 
     assert any("repo root not allowlisted" in violation for violation in violations)
+
+
+def test_repo_policy_allowlists_production_handoff_dir() -> None:
+    # Guards the deployed loop VM: the daemon writes per-change handoffs under
+    # its --output-root (/var/lib/engineering-loop/runs), which must stay
+    # allowlisted in the shipped policy or every run dead-ends at needs_triage.
+    repo_root = Path(__file__).resolve().parents[1]
+    policy_path = repo_root / "engineering-loop-policy.yml"
+
+    state = _base_state(policy_path)
+    state["handoff_output_dir"] = "/var/lib/engineering-loop/runs/issue_x/handoff"
+    assert validate_graph_state(state) == []
+
+    state["handoff_output_dir"] = "/var/lib/engineering-loop/secrets"
+    assert any(
+        "handoff output directory is not allowlisted" in violation
+        for violation in validate_graph_state(state)
+    )
