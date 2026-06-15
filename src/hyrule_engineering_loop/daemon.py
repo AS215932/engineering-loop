@@ -90,6 +90,10 @@ class DaemonConfig:
     state_dir: Path = Path(".engineering-loop-state/daemon")
     memory_dir: str | None = None
     allowed_paths: tuple[str, ...] = ("docs",)
+    # Per-repo override of allowed_paths, keyed by sibling checkout name
+    # (see repo_name_for_issue). Falls back to allowed_paths (docs-only) for any
+    # repo not listed, so the daemon stays docs-only unless explicitly widened.
+    allowed_paths_by_repo: dict[str, tuple[str, ...]] = field(default_factory=dict)
     remote: str = "origin"
     max_runs_per_day: int = 2
     max_cost_usd_per_day: float = 10.0
@@ -399,14 +403,16 @@ def daemon_once(
         )
 
         runner = feature_runner or run_feature_intake
+        repo_name = repo_name_for_issue(item)
+        effective_allowed_paths = list(config.allowed_paths_by_repo.get(repo_name, config.allowed_paths))
         result = runner(
             change_id=change_id,
             change_class=change_class,
             workspace_root=config.workspace_root,
             output_root=output_root,
-            repo_name=repo_name_for_issue(item),
+            repo_name=repo_name,
             request_path=request_path,
-            allowed_paths=list(config.allowed_paths),
+            allowed_paths=effective_allowed_paths,
             source_files=["README.md"],
             memory_dir=config.memory_dir,
             backend_budget={

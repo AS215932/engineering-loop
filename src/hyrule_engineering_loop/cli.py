@@ -475,6 +475,10 @@ def daemon_command(args: argparse.Namespace) -> int:
         memory_dir=args.memory_dir,
         max_runs_per_day=args.max_runs_per_day,
         max_cost_usd_per_day=args.max_cost_usd_per_day,
+        allowed_paths_by_repo={
+            repo: tuple(prefixes)
+            for repo, prefixes in _parse_repo_paths(args.allow, option="--allow").items()
+        },
     )
     report = daemon_once(config, client=GhCli())
     print(json.dumps(report.as_dict(), indent=2, sort_keys=True))
@@ -827,6 +831,12 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_parser.add_argument("--max-runs-per-day", type=int, default=DaemonConfig.max_runs_per_day)
     daemon_parser.add_argument(
         "--max-cost-usd-per-day", type=float, default=DaemonConfig.max_cost_usd_per_day
+    )
+    daemon_parser.add_argument(
+        "--allow",
+        action="append",
+        metavar="REPO=PATH_PREFIX",
+        help="widen allowed write paths for a repo (default: docs only). Repeatable.",
     )
     daemon_parser.set_defaults(func=daemon_command)
 
