@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -47,6 +48,22 @@ def _cleanup_worktree(repo_path: Path, branch: str, worktree_path: Path) -> None
         check=False,
         text=True,
     )
+
+
+def _worktree_branch_registered(repo_path: Path, branch: str) -> bool:
+    """Return ``True`` when ``branch`` still exists (e.g. left by a crashed run).
+
+    A leftover branch with no worktree directory would make ``worktree add -b``
+    fail, so it must be detected even when the worktree path is already gone.
+    """
+    completed = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+        cwd=repo_path,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    return completed.returncode == 0
 
 
 def diff_preview_from_results(results: list[dict[str, Any]], *, max_chars: int = 4_000) -> list[dict[str, Any]]:
@@ -101,8 +118,15 @@ def setup_worktrees_for_state(state: GraphState) -> list[dict[str, Any]]:
 
             branch = f"{branch_prefix}/{_slug(state['change_id'])}/{_slug(repo_name)}"
             worktree_path = worktree_parent / f"{_slug(repo_name)}-{_slug(state['change_id'])}"
-            if worktree_path.exists():
-                raise PromotionError(f"worktree path already exists: {worktree_path}")
+            # Self-heal stale state from a prior crashed run: a leftover worktree
+            # or branch for this change_id would otherwise wedge every future run,
+            # because the per-invocation rollback below only removes worktrees
+            # created in *this* call. _cleanup_worktree + prune are no-ops on a
+            # clean tree, so this is safe when nothing stale exists.
+            if worktree_path.exists() or _worktree_branch_registered(repo_path, branch):
+                _cleanup_worktree(repo_path, branch, worktree_path)
+                shutil.rmtree(worktree_path, ignore_errors=True)
+                _run_git(["worktree", "prune"], cwd=repo_path)
             _run_git(["worktree", "add", "-b", branch, str(worktree_path), base_ref], cwd=repo_path)
             created.append((repo_path, branch, worktree_path))
             results.append(
