@@ -212,6 +212,7 @@ def test_repo_name_for_issue_maps_core_repo_checkout_names() -> None:
         "AS215932/hyrule-mcp": "hyrule-mcp",
         "AS215932/noc-agent": "hyrule-noc-agent",
         "AS215932/hyrule-network-proxy": "hyrule-network-proxy",
+        "AS215932/as215932.net": "as215932.net",
     }
     for repo, checkout in cases.items():
         item = IntakeItem(
