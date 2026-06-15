@@ -1,15 +1,26 @@
 # Hyrule Engineering Loop
 
-Autonomous development loop for the AS215932 (Hyrule / Servify) infrastructure.
-A LangGraph runtime that classifies a change, plans it into a task spec,
-delegates implementation to a real coding-agent backend inside a guarded
-worktree, re-runs gates, has senior-role agents judge the resulting diff,
-learns from every run, and stops at a **draft PR** for human sign-off. Merges
-and production applies are always human-gated.
+Autonomous development loop for the Hyrule Networks (AS215932) infrastructure.
 
-Extracted from `AS215932/network-operations` (history preserved) once the v2
-refactor stabilized — see that repo's `docs/engineering-loop/` for the design
-spec and roadmap, and `docs/agentic-development-loop.md` here for the runtime.
+This repository is a [LangGraph](https://langchain-ai.github.io/langgraph/)
+runtime that classifies a change, plans it into a task spec, delegates
+implementation to a real coding-agent backend inside a guarded worktree, re-runs
+gates, has senior-role agents judge the resulting diff, learns from every run,
+and stops at a **draft PR** for human sign-off. Merges and production applies
+are always human-gated.
+
+Extracted from [`AS215932/network-operations`](https://github.com/AS215932/network-operations)
+once the v2 refactor stabilized — see that repo's `docs/engineering-loop/` for
+the design spec and roadmap, and `docs/agentic-development-loop.md` here for the
+runtime reference.
+
+## Why it exists
+
+Running an ISP in public means a lot of small, precise changes: firewall rules,
+monitoring checks, DNS records, config tweaks. The Engineering Loop automates
+the mechanical parts — classification, planning, implementation, testing, and
+review prep — while keeping humans in control of anything that touches
+production.
 
 ## Layout
 
@@ -56,3 +67,9 @@ local tests keep using the root `model-policy.yml` mock backend.
 The backend executes generated code. CI runs only on the unprivileged
 `ci-pr` runner (label `hyrule-public-pr`); the daemon refuses to run when
 `GITHUB_ACTIONS` is set. Never schedule it on a privileged runner.
+
+## Related repositories
+
+- [`network-operations`](https://github.com/AS215932/network-operations) — Production infrastructure record
+- [`hyrule-mcp`](https://github.com/AS215932/hyrule-mcp) — Live MCP diagnostics consumed during investigations
+- [`noc-agent`](https://github.com/AS215932/noc-agent) — Operator-facing incident agent
