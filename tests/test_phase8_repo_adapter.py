@@ -145,6 +145,7 @@ def test_discovery_includes_engineering_loop_and_infra_checkout_names(tmp_path: 
     _init_repo(workspace_root / "hyrule-infra")
     _init_repo(workspace_root / "hyrule-cloud")
     _init_repo(workspace_root / "network-operations")
+    _init_repo(workspace_root / "as215932.net")
 
     discovered = discover_hyrule_repositories(workspace_root)
 
@@ -153,4 +154,5 @@ def test_discovery_includes_engineering_loop_and_infra_checkout_names(tmp_path: 
         "hyrule-infra",
         "hyrule-cloud",
         "network-operations",
+        "as215932.net",
     }
