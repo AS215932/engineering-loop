@@ -53,3 +53,14 @@ jobs:
         # not /tmp, which would otherwise fail those tests on the handoff
         # allowlist while passing locally.
         run: TMPDIR=/tmp ~/.local/bin/uv run --group dev python -m pytest -q
+
+  evals:
+    runs-on: [self-hosted, linux, x64, hyrule-public-pr]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+      - name: private evals
+        # Offline, deterministic domain-judgment suite; no model, no network.
+        # Captures AS215932 token capital and blocks regressions in CI.
+        run: ~/.local/bin/uv run --group dev hyrule-engineering-loop evals run --strict

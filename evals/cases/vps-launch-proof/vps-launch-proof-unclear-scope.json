@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "vps-launch-proof-unclear-scope",
+  "family": "vps-launch-proof",
+  "title": "Unclear cloud scope needs review",
+  "input": {
+    "issue_title": "Refactor the cloud service",
+    "issue_body": "A general refactor of hyrule-cloud internals.",
+    "repo": "AS215932/hyrule-cloud",
+    "changed_paths": []
+  },
+  "must_include": [
+    "unclear scope",
+    "launch-proof contract"
+  ],
+  "must_not_include": [],
+  "expected_decision": "request_human_review",
+  "tags": [
+    "launch-proof"
+  ]
+}
