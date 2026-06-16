@@ -20,6 +20,7 @@ from hyrule_engineering_loop.daemon import (
     notify_icinga,
     repo_name_for_issue,
 )
+from hyrule_engineering_loop.cli import build_parser
 from hyrule_engineering_loop.intake import IntakeItem
 from hyrule_engineering_loop.nodes import STALL_ROUND_LIMIT, delegate_implementation_node
 from hyrule_engineering_loop.promotion import rollback_promotions, setup_worktrees_for_state
@@ -193,6 +194,20 @@ def test_idle_queue_reports_idle(tmp_path: Path) -> None:
     )
     report = daemon_once(config, client=FakeGh({"issue list": "[]"}))
     assert report.outcome == "idle"
+
+
+def test_daemon_cli_per_run_budget_flags() -> None:
+    parser = build_parser()
+    # Defaults match the conservative DaemonConfig values.
+    default_args = parser.parse_args(["daemon", "--once"])
+    assert default_args.max_iterations_per_run == DaemonConfig.max_iterations_per_run
+    assert default_args.max_wall_clock_minutes_per_run == DaemonConfig.max_wall_clock_minutes_per_run
+    # Overridable for a one-off larger run.
+    args = parser.parse_args(
+        ["daemon", "--once", "--max-iterations-per-run", "40", "--max-wall-clock-minutes-per-run", "90"]
+    )
+    assert args.max_iterations_per_run == 40
+    assert args.max_wall_clock_minutes_per_run == 90
 
 
 def test_daemon_defaults_to_core_repos_and_low_and_slow_budget() -> None:

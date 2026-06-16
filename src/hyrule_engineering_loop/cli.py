@@ -475,6 +475,8 @@ def daemon_command(args: argparse.Namespace) -> int:
         memory_dir=args.memory_dir,
         max_runs_per_day=args.max_runs_per_day,
         max_cost_usd_per_day=args.max_cost_usd_per_day,
+        max_iterations_per_run=args.max_iterations_per_run,
+        max_wall_clock_minutes_per_run=args.max_wall_clock_minutes_per_run,
         allowed_paths_by_repo={
             repo: tuple(prefixes)
             for repo, prefixes in _parse_repo_paths(args.allow, option="--allow").items()
@@ -831,6 +833,12 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_parser.add_argument("--max-runs-per-day", type=int, default=DaemonConfig.max_runs_per_day)
     daemon_parser.add_argument(
         "--max-cost-usd-per-day", type=float, default=DaemonConfig.max_cost_usd_per_day
+    )
+    daemon_parser.add_argument(
+        "--max-iterations-per-run", type=int, default=DaemonConfig.max_iterations_per_run
+    )
+    daemon_parser.add_argument(
+        "--max-wall-clock-minutes-per-run", type=int, default=DaemonConfig.max_wall_clock_minutes_per_run
     )
     daemon_parser.add_argument(
         "--allow",
