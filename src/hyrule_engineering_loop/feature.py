@@ -13,6 +13,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from hyrule_engineering_loop.graph import build_graph
 from hyrule_engineering_loop.knowledge_context import KnowledgeContextConfig, load_knowledge_context
+from hyrule_engineering_loop.knowledge_learning import write_learning_event_for_state
 from hyrule_engineering_loop.nodes import ALL_ROLES
 from hyrule_engineering_loop.preflight import preflight_feature_state
 from hyrule_engineering_loop.repo_adapter import discover_hyrule_repositories
@@ -203,6 +204,7 @@ def build_feature_state(
     memory_dir: str | None = None,
     backend_budget: dict[str, Any] | None = None,
     knowledge_context: KnowledgeContextConfig | None = None,
+    knowledge_learning_dir: str | None = None,
 ) -> GraphState:
     """Build a graph state from operator-friendly feature-intake arguments."""
     workspace_root = workspace_root.expanduser().resolve()
@@ -284,6 +286,8 @@ def build_feature_state(
             state["knowledge_context_summary"] = str(loaded_context["summary"])
         if loaded_context.get("error"):
             state["knowledge_context_error"] = str(loaded_context["error"])
+    if knowledge_learning_dir is not None:
+        state["knowledge_learning_dir"] = knowledge_learning_dir
     return state
 
 
@@ -302,6 +306,7 @@ def run_feature_dry_live(
     model_policy_file: str | None = None,
     memory_dir: str | None = None,
     knowledge_context: KnowledgeContextConfig | None = None,
+    knowledge_learning_dir: str | None = None,
 ) -> dict[str, Any]:
     """Build live writer prompt/context/model preview without provider calls."""
     state = build_feature_state(
@@ -323,6 +328,7 @@ def run_feature_dry_live(
         dry_live_mode=True,
         memory_dir=memory_dir,
         knowledge_context=knowledge_context,
+        knowledge_learning_dir=knowledge_learning_dir,
     )
     preflight = preflight_feature_state(state, output_root=output_root, live=False)
     state["preflight_results"] = preflight
@@ -360,6 +366,7 @@ def run_feature_intake(
     memory_dir: str | None = None,
     backend_budget: dict[str, Any] | None = None,
     knowledge_context: KnowledgeContextConfig | None = None,
+    knowledge_learning_dir: str | None = None,
 ) -> dict[str, Any]:
     """Run the graph from a human-authored feature request."""
     state = build_feature_state(
@@ -382,6 +389,7 @@ def run_feature_intake(
         memory_dir=memory_dir,
         backend_budget=backend_budget,
         knowledge_context=knowledge_context,
+        knowledge_learning_dir=knowledge_learning_dir,
     )
     if live_mode:
         preflight = preflight_feature_state(state, output_root=output_root, live=True)
@@ -407,6 +415,9 @@ def run_feature_intake(
             final_state["signoff_status"] = "ready_for_review"
         else:
             final_state["signoff_status"] = "not_required"
+    if final_state.get("knowledge_learning_dir"):
+        event_path = write_learning_event_for_state(cast(GraphState, final_state), Path(str(final_state["knowledge_learning_dir"])))
+        final_state["knowledge_learning_event_path"] = str(event_path)
     _write_state(state_path, final_state)
 
     return {
@@ -428,6 +439,7 @@ def run_feature_intake(
         "live_mode": live_mode,
         "knowledge_context_status": final_state.get("knowledge_context_status"),
         "knowledge_context_ref_count": len((final_state.get("knowledge_context_pack") or {}).get("included_refs", [])) if isinstance(final_state.get("knowledge_context_pack"), dict) else 0,
+        "knowledge_learning_event_path": final_state.get("knowledge_learning_event_path"),
         "final_state": final_state,
     }
 
