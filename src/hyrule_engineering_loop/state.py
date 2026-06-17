@@ -177,3 +177,5 @@ class GraphState(TypedDict):
     knowledge_context_pack: NotRequired[Dict[str, Any]]
     knowledge_context_summary: NotRequired[str]
     knowledge_context_error: NotRequired[str]
+    knowledge_learning_dir: NotRequired[str]
+    knowledge_learning_event_path: NotRequired[str]

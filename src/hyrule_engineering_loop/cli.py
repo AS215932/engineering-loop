@@ -367,6 +367,7 @@ def feature_command(args: argparse.Namespace) -> int:
                 model_policy_file=args.model_policy,
                 memory_dir=args.memory_dir,
                 knowledge_context=_knowledge_context_config(args),
+                knowledge_learning_dir=args.knowledge_learning_dir,
             )
         except FeatureIntakeError as exc:
             print(f"[CLI] feature dry-live failed: {exc}")
@@ -394,6 +395,7 @@ def feature_command(args: argparse.Namespace) -> int:
             task_spec=Path(args.task_spec) if args.task_spec else None,
             memory_dir=args.memory_dir,
             knowledge_context=_knowledge_context_config(args),
+            knowledge_learning_dir=args.knowledge_learning_dir,
         )
     except FeaturePreflightError as exc:
         print(json.dumps({"preflight": exc.result, "live_mode": args.live}, indent=2, sort_keys=True))
@@ -420,6 +422,7 @@ def feature_command(args: argparse.Namespace) -> int:
         "live_mode": result["live_mode"],
         "knowledge_context_status": result.get("knowledge_context_status"),
         "knowledge_context_ref_count": result.get("knowledge_context_ref_count", 0),
+        "knowledge_learning_event_path": result.get("knowledge_learning_event_path"),
     }
     if result.get("failure_summary") is not None:
         summary["failure_summary"] = result["failure_summary"]
@@ -840,6 +843,7 @@ def build_parser() -> argparse.ArgumentParser:
     feature_parser.add_argument("--knowledge-context-budget", type=int, default=6000)
     feature_parser.add_argument("--knowledge-context-authority-min", default="A4")
     feature_parser.add_argument("--knowledge-context-timeout", type=int, default=20)
+    feature_parser.add_argument("--knowledge-learning-dir", help="write a sanitized local learning-event artifact (default off)")
     feature_parser.add_argument("--no-scaffold-plan", action="store_true")
     feature_parser.add_argument("--base-ref", default="HEAD")
     feature_parser.add_argument("--model-policy")
