@@ -12,6 +12,7 @@ from typing import Any, Iterable, Iterator, cast
 from langgraph.checkpoint.memory import MemorySaver
 
 from hyrule_engineering_loop.graph import build_graph
+from hyrule_engineering_loop.knowledge_context import KnowledgeContextConfig, load_knowledge_context
 from hyrule_engineering_loop.nodes import ALL_ROLES
 from hyrule_engineering_loop.preflight import preflight_feature_state
 from hyrule_engineering_loop.repo_adapter import discover_hyrule_repositories
@@ -201,6 +202,7 @@ def build_feature_state(
     task_spec_path: Path | None = None,
     memory_dir: str | None = None,
     backend_budget: dict[str, Any] | None = None,
+    knowledge_context: KnowledgeContextConfig | None = None,
 ) -> GraphState:
     """Build a graph state from operator-friendly feature-intake arguments."""
     workspace_root = workspace_root.expanduser().resolve()
@@ -271,6 +273,17 @@ def build_feature_state(
         state["backend_budget"] = dict(backend_budget)
     if model_policy_file is not None:
         state["model_policy_file"] = model_policy_file
+    if knowledge_context is not None:
+        loaded_context = load_knowledge_context(request_text, config=knowledge_context)
+        state["knowledge_context_enabled"] = knowledge_context.enabled
+        state["knowledge_context_repo"] = str(knowledge_context.repo_path)
+        state["knowledge_context_status"] = str(loaded_context.get("status", "unknown"))
+        if loaded_context.get("pack") is not None:
+            state["knowledge_context_pack"] = cast(dict[str, Any], loaded_context["pack"])
+        if loaded_context.get("summary"):
+            state["knowledge_context_summary"] = str(loaded_context["summary"])
+        if loaded_context.get("error"):
+            state["knowledge_context_error"] = str(loaded_context["error"])
     return state
 
 
@@ -288,6 +301,7 @@ def run_feature_dry_live(
     promotion_base_ref: str = "HEAD",
     model_policy_file: str | None = None,
     memory_dir: str | None = None,
+    knowledge_context: KnowledgeContextConfig | None = None,
 ) -> dict[str, Any]:
     """Build live writer prompt/context/model preview without provider calls."""
     state = build_feature_state(
@@ -308,6 +322,7 @@ def run_feature_dry_live(
         live_mode=False,
         dry_live_mode=True,
         memory_dir=memory_dir,
+        knowledge_context=knowledge_context,
     )
     preflight = preflight_feature_state(state, output_root=output_root, live=False)
     state["preflight_results"] = preflight
@@ -319,6 +334,8 @@ def run_feature_dry_live(
         "dry_live": True,
         "provider_called": False,
         "preflight": preflight,
+        "knowledge_context_status": state.get("knowledge_context_status"),
+        "knowledge_context_ref_count": len((state.get("knowledge_context_pack") or {}).get("included_refs", [])) if isinstance(state.get("knowledge_context_pack"), dict) else 0,
     }
 
 
@@ -342,6 +359,7 @@ def run_feature_intake(
     task_spec: Path | None = None,
     memory_dir: str | None = None,
     backend_budget: dict[str, Any] | None = None,
+    knowledge_context: KnowledgeContextConfig | None = None,
 ) -> dict[str, Any]:
     """Run the graph from a human-authored feature request."""
     state = build_feature_state(
@@ -363,6 +381,7 @@ def run_feature_intake(
         task_spec_path=task_spec,
         memory_dir=memory_dir,
         backend_budget=backend_budget,
+        knowledge_context=knowledge_context,
     )
     if live_mode:
         preflight = preflight_feature_state(state, output_root=output_root, live=True)
@@ -407,6 +426,8 @@ def run_feature_intake(
         "signoff_summary": final_state.get("signoff_summary"),
         "signoff_status": final_state.get("signoff_status"),
         "live_mode": live_mode,
+        "knowledge_context_status": final_state.get("knowledge_context_status"),
+        "knowledge_context_ref_count": len((final_state.get("knowledge_context_pack") or {}).get("included_refs", [])) if isinstance(final_state.get("knowledge_context_pack"), dict) else 0,
         "final_state": final_state,
     }
 

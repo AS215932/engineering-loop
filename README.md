@@ -35,6 +35,7 @@ production.
 - `configs/loop/` — systemd service + timer for the operations lane.
 - `model-policy.yml`, `engineering-loop-policy.yml` — model/backend routing
   and the mutation/publication policy guards.
+- Optional AS215932 knowledge context-pack integration is default-off and read-only.
 
 ## Develop
 
@@ -52,6 +53,21 @@ uv run hyrule-engineering-loop --help
 uv run hyrule-engineering-loop daemon --once
 ```
 
+A feature run can optionally include a local knowledge context pack from
+`AS215932/knowledge` without enabling live tools, telemetry, LLM calls, or writes
+in the knowledge repo:
+
+```bash
+uv run hyrule-engineering-loop feature CHANGE_ID \
+  --request request.md \
+  --repo hyrule-cloud \
+  --workspace-root /home/svag/Dev \
+  --output-root .engineering-loop-state \
+  --allow docs \
+  --knowledge-context \
+  --knowledge-repo /home/svag/Dev/knowledge
+```
+
 The daemon's default production scope is the seven core repos:
 `engineering-loop`, `network-operations`, `hyrule-cloud`, `hyrule-web`,
 `hyrule-mcp`, `noc-agent`, and `hyrule-network-proxy`. It runs low-and-slow by
@@ -67,6 +83,11 @@ local tests keep using the root `model-policy.yml` mock backend.
 The backend executes generated code. CI runs only on the unprivileged
 `ci-pr` runner (label `hyrule-public-pr`); the daemon refuses to run when
 `GITHUB_ACTIONS` is set. Never schedule it on a privileged runner.
+
+Knowledge context is read-only and policy-scoped. It shells out to a local
+`hyrule-knowledge context-pack` command (or reads an explicit JSON fixture in
+tests) and stores the returned citations in graph state. It must not call live
+MCP/Prometheus/Icinga endpoints, expose secrets, or write learning traces.
 
 ## Related repositories
 
