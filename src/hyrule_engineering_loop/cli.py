@@ -20,6 +20,7 @@ from hyrule_engineering_loop.feature import (
     run_feature_intake,
 )
 from hyrule_engineering_loop.graph import build_graph
+from hyrule_engineering_loop.knowledge_context import KnowledgeContextConfig
 from hyrule_engineering_loop.intake import (
     APPROVED_LABEL,
     CANDIDATE_LABEL,
@@ -113,6 +114,21 @@ def _parse_mutations(items: list[str] | None, *, option: str) -> dict[str, str]:
         path, content = item.split("=", 1)
         parsed[path] = content
     return parsed
+
+
+def _knowledge_context_config(args: argparse.Namespace) -> KnowledgeContextConfig | None:
+    if not getattr(args, "knowledge_context", False) and not getattr(args, "knowledge_context_fixture", None):
+        return None
+    return KnowledgeContextConfig(
+        enabled=True,
+        repo_path=Path(getattr(args, "knowledge_repo", "../knowledge")),
+        role=getattr(args, "knowledge_context_role", "engineering_loop"),
+        risk_level=getattr(args, "knowledge_context_risk", "low"),
+        budget_tokens=int(getattr(args, "knowledge_context_budget", 6000)),
+        authority_min=getattr(args, "knowledge_context_authority_min", "A4"),
+        timeout_seconds=int(getattr(args, "knowledge_context_timeout", 20)),
+        fixture_path=Path(args.knowledge_context_fixture) if getattr(args, "knowledge_context_fixture", None) else None,
+    )
 
 
 def _model_summary_from_state(state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -350,6 +366,7 @@ def feature_command(args: argparse.Namespace) -> int:
                 promotion_base_ref=args.base_ref,
                 model_policy_file=args.model_policy,
                 memory_dir=args.memory_dir,
+                knowledge_context=_knowledge_context_config(args),
             )
         except FeatureIntakeError as exc:
             print(f"[CLI] feature dry-live failed: {exc}")
@@ -376,6 +393,7 @@ def feature_command(args: argparse.Namespace) -> int:
             live_mode=args.live,
             task_spec=Path(args.task_spec) if args.task_spec else None,
             memory_dir=args.memory_dir,
+            knowledge_context=_knowledge_context_config(args),
         )
     except FeaturePreflightError as exc:
         print(json.dumps({"preflight": exc.result, "live_mode": args.live}, indent=2, sort_keys=True))
@@ -400,6 +418,8 @@ def feature_command(args: argparse.Namespace) -> int:
         "diff_preview": result["diff_preview"],
         "signoff_status": result.get("signoff_status"),
         "live_mode": result["live_mode"],
+        "knowledge_context_status": result.get("knowledge_context_status"),
+        "knowledge_context_ref_count": result.get("knowledge_context_ref_count", 0),
     }
     if result.get("failure_summary") is not None:
         summary["failure_summary"] = result["failure_summary"]
@@ -812,6 +832,14 @@ def build_parser() -> argparse.ArgumentParser:
     feature_parser.add_argument("--plan-path")
     feature_parser.add_argument("--task-spec")
     feature_parser.add_argument("--memory-dir")
+    feature_parser.add_argument("--knowledge-context", action="store_true", help="include a read-only AS215932 knowledge context pack (default off)")
+    feature_parser.add_argument("--knowledge-context-fixture", help="load a context-pack JSON fixture instead of invoking the knowledge CLI")
+    feature_parser.add_argument("--knowledge-repo", default="../knowledge")
+    feature_parser.add_argument("--knowledge-context-role", default="engineering_loop")
+    feature_parser.add_argument("--knowledge-context-risk", default="low")
+    feature_parser.add_argument("--knowledge-context-budget", type=int, default=6000)
+    feature_parser.add_argument("--knowledge-context-authority-min", default="A4")
+    feature_parser.add_argument("--knowledge-context-timeout", type=int, default=20)
     feature_parser.add_argument("--no-scaffold-plan", action="store_true")
     feature_parser.add_argument("--base-ref", default="HEAD")
     feature_parser.add_argument("--model-policy")

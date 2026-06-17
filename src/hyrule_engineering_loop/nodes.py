@@ -174,6 +174,8 @@ def _read_repo_source_context(paths: Iterable[str], state: GraphState) -> dict[s
     if state.get("feature_request"):
         request_key = state.get("feature_request_path", "feature_request")
         context[request_key] = state["feature_request"]
+    if state.get("knowledge_context_summary"):
+        context["as215932_knowledge_context_pack.md"] = state["knowledge_context_summary"]
 
     for raw_path in paths:
         repo_root: Path | None = None
