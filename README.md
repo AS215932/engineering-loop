@@ -70,7 +70,8 @@ uv run hyrule-engineering-loop feature CHANGE_ID \
 
 A run can also write a local sanitized learning-event artifact for human
 promotion into `AS215932/knowledge` later. This does not write to the knowledge
-repo and excludes raw prompts, diffs, transcripts, command output, and secrets:
+repo and excludes raw prompts, diffs, transcripts, command output, and secrets.
+See `docs/knowledge-learning-workflow.md` for the import/review/promotion flow:
 
 ```bash
 uv run hyrule-engineering-loop feature CHANGE_ID \
@@ -103,7 +104,8 @@ Knowledge context is read-only and policy-scoped. It shells out to a local
 `hyrule-knowledge context-pack` command (or reads an explicit JSON fixture in
 tests) and stores the returned citations in graph state. It must not call live
 MCP/Prometheus/Icinga endpoints or expose secrets. Optional learning events are
-local sanitized artifacts only; humans decide whether to promote them.
+local sanitized artifacts only; humans import, review, and promote them in the
+knowledge repo.
 
 ## Related repositories
 
