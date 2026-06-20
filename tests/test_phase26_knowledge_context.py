@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from hyrule_engineering_loop.feature import build_feature_state
 from hyrule_engineering_loop.knowledge_context import (
     KnowledgeContextConfig,
+    _mcp_read_write_streams,
     _mcp_tool_result_to_dict,
     load_knowledge_context,
 )
@@ -69,6 +70,11 @@ def test_mcp_tool_result_text_content_is_parsed() -> None:
     result = SimpleNamespace(content=[SimpleNamespace(text=json.dumps(FIXTURE_PACK))])
 
     assert _mcp_tool_result_to_dict(result)["id"] == "ctx_test"
+
+
+def test_mcp_read_write_streams_accepts_sse_and_streamable_shapes() -> None:
+    assert _mcp_read_write_streams(("read", "write")) == ("read", "write")
+    assert _mcp_read_write_streams(("read", "write", "session")) == ("read", "write")
 
 
 def test_feature_state_includes_optional_knowledge_context(tmp_path: Path) -> None:

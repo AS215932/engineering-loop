@@ -141,7 +141,8 @@ async def _read_mcp_context_pack_async(task: str, config: KnowledgeContextConfig
         raise KnowledgeContextError("optional dependency `mcp` is required for HYRULE_KNOWLEDGE_MCP_URL") from exc
 
     assert config.mcp_url is not None
-    async with client_factory(config.mcp_url, timeout=config.timeout_seconds, sse_read_timeout=config.timeout_seconds) as (read_stream, write_stream, _session_id):
+    async with client_factory(config.mcp_url, timeout=config.timeout_seconds, sse_read_timeout=config.timeout_seconds) as streams:
+        read_stream, write_stream = _mcp_read_write_streams(streams)
         async with client_session(read_stream, write_stream) as session:
             await session.initialize()
             result = await session.call_tool(
@@ -154,6 +155,12 @@ async def _read_mcp_context_pack_async(task: str, config: KnowledgeContextConfig
                 },
             )
     return _mcp_tool_result_to_dict(result)
+
+
+def _mcp_read_write_streams(streams: Any) -> tuple[Any, Any]:
+    if isinstance(streams, tuple) and len(streams) >= 2:
+        return streams[0], streams[1]
+    raise KnowledgeContextError("knowledge MCP client did not return read/write streams")
 
 
 def _mcp_tool_result_to_dict(result: Any) -> dict[str, Any]:
