@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Callable, TypeAlias
 
 from hyrule_engineering_loop.feature import run_feature_intake
+from hyrule_engineering_loop.knowledge_context import KnowledgeContextConfig
 from hyrule_engineering_loop.intake import (
     APPROVED_LABEL,
     GhClient,
@@ -101,6 +102,8 @@ class DaemonConfig:
     max_wall_clock_minutes_per_run: int = 45
     max_cost_usd_per_run: float = 5.0
     lock_max_age_seconds: int = DEFAULT_LOCK_MAX_AGE_SECONDS
+    knowledge_context: KnowledgeContextConfig | None = None
+    knowledge_learning_dir: str | None = None
 
 
 @dataclass
@@ -420,6 +423,8 @@ def daemon_once(
                 "max_wall_clock_minutes": config.max_wall_clock_minutes_per_run,
                 "max_cost_usd": config.max_cost_usd_per_run,
             },
+            knowledge_context=config.knowledge_context,
+            knowledge_learning_dir=config.knowledge_learning_dir,
         )
         final_state = dict(result.get("final_state", {}))
         final_state["risk_level"] = final_state.get("risk_level", risk)

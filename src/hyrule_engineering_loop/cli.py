@@ -128,6 +128,8 @@ def _knowledge_context_config(args: argparse.Namespace) -> KnowledgeContextConfi
         authority_min=getattr(args, "knowledge_context_authority_min", "A4"),
         timeout_seconds=int(getattr(args, "knowledge_context_timeout", 20)),
         fixture_path=Path(args.knowledge_context_fixture) if getattr(args, "knowledge_context_fixture", None) else None,
+        mcp_url=getattr(args, "knowledge_mcp_url", None),
+        mcp_transport=getattr(args, "knowledge_mcp_transport", "streamable-http"),
     )
 
 
@@ -504,6 +506,8 @@ def daemon_command(args: argparse.Namespace) -> int:
             repo: tuple(prefixes)
             for repo, prefixes in _parse_repo_paths(args.allow, option="--allow").items()
         },
+        knowledge_context=_knowledge_context_config(args),
+        knowledge_learning_dir=args.knowledge_learning_dir,
     )
     report = daemon_once(config, client=GhCli())
     print(json.dumps(report.as_dict(), indent=2, sort_keys=True))
@@ -838,6 +842,8 @@ def build_parser() -> argparse.ArgumentParser:
     feature_parser.add_argument("--knowledge-context", action="store_true", help="include a read-only AS215932 knowledge context pack (default off)")
     feature_parser.add_argument("--knowledge-context-fixture", help="load a context-pack JSON fixture instead of invoking the knowledge CLI")
     feature_parser.add_argument("--knowledge-repo", default="../knowledge")
+    feature_parser.add_argument("--knowledge-mcp-url", help="load context through a read-only knowledge MCP HTTP/SSE endpoint")
+    feature_parser.add_argument("--knowledge-mcp-transport", default="streamable-http", choices=["streamable-http", "http", "sse"])
     feature_parser.add_argument("--knowledge-context-role", default="engineering_loop")
     feature_parser.add_argument("--knowledge-context-risk", default="low")
     feature_parser.add_argument("--knowledge-context-budget", type=int, default=6000)
@@ -878,6 +884,17 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="REPO=PATH_PREFIX",
         help="widen allowed write paths for a repo (default: docs only). Repeatable.",
     )
+    daemon_parser.add_argument("--knowledge-context", action="store_true", help="include a read-only AS215932 knowledge context pack (default off)")
+    daemon_parser.add_argument("--knowledge-context-fixture", help="load a context-pack JSON fixture instead of invoking knowledge")
+    daemon_parser.add_argument("--knowledge-repo", default="../knowledge")
+    daemon_parser.add_argument("--knowledge-mcp-url", help="load context through a read-only knowledge MCP HTTP/SSE endpoint")
+    daemon_parser.add_argument("--knowledge-mcp-transport", default="streamable-http", choices=["streamable-http", "http", "sse"])
+    daemon_parser.add_argument("--knowledge-context-role", default="engineering_loop")
+    daemon_parser.add_argument("--knowledge-context-risk", default="low")
+    daemon_parser.add_argument("--knowledge-context-budget", type=int, default=6000)
+    daemon_parser.add_argument("--knowledge-context-authority-min", default="A4")
+    daemon_parser.add_argument("--knowledge-context-timeout", type=int, default=20)
+    daemon_parser.add_argument("--knowledge-learning-dir", help="write a sanitized local learning-event artifact (default off)")
     daemon_parser.set_defaults(func=daemon_command)
 
     intake_parser = subparsers.add_parser("intake", help="signal mining and triage inbox")

@@ -12,8 +12,11 @@ import json
 import os
 import subprocess
 from dataclasses import dataclass
+from importlib import import_module
 from pathlib import Path
 from typing import Any
+
+import anyio
 
 
 class KnowledgeContextError(RuntimeError):
@@ -30,6 +33,8 @@ class KnowledgeContextConfig:
     authority_min: str = "A4"
     timeout_seconds: int = 20
     fixture_path: Path | None = None
+    mcp_url: str | None = None
+    mcp_transport: str = "streamable-http"
 
     @classmethod
     def from_env(cls) -> KnowledgeContextConfig:
@@ -42,6 +47,8 @@ class KnowledgeContextConfig:
             authority_min=os.environ.get("HYRULE_KNOWLEDGE_CONTEXT_AUTHORITY_MIN", "A4"),
             timeout_seconds=int(os.environ.get("HYRULE_KNOWLEDGE_CONTEXT_TIMEOUT", "20")),
             fixture_path=Path(os.environ["HYRULE_KNOWLEDGE_CONTEXT_FIXTURE"]) if os.environ.get("HYRULE_KNOWLEDGE_CONTEXT_FIXTURE") else None,
+            mcp_url=os.environ.get("HYRULE_KNOWLEDGE_MCP_URL") or None,
+            mcp_transport=os.environ.get("HYRULE_KNOWLEDGE_MCP_TRANSPORT", "streamable-http"),
         )
 
 
@@ -70,6 +77,8 @@ def load_knowledge_context(task: str, *, config: KnowledgeContextConfig | None =
 def _load_pack(task: str, config: KnowledgeContextConfig) -> dict[str, Any]:
     if config.fixture_path is not None:
         return _read_fixture(config.fixture_path)
+    if config.mcp_url:
+        return _read_mcp_context_pack(task, config)
     repo_path = config.repo_path.expanduser().resolve()
     if not repo_path.is_dir():
         raise KnowledgeContextError(f"knowledge repo not found: {repo_path}")
@@ -108,6 +117,58 @@ def _load_pack(task: str, config: KnowledgeContextConfig) -> dict[str, Any]:
     if not isinstance(loaded, dict):
         raise KnowledgeContextError("knowledge context-pack output was not an object")
     return loaded
+
+
+def _read_mcp_context_pack(task: str, config: KnowledgeContextConfig) -> dict[str, Any]:
+    try:
+        return anyio.run(_read_mcp_context_pack_async, task, config)
+    except KnowledgeContextError:
+        raise
+    except Exception as exc:
+        raise KnowledgeContextError(f"knowledge MCP context-pack request failed: {exc}") from exc
+
+
+async def _read_mcp_context_pack_async(task: str, config: KnowledgeContextConfig) -> dict[str, Any]:
+    try:
+        client_session = getattr(import_module("mcp"), "ClientSession")
+        if config.mcp_transport == "sse":
+            client_factory = getattr(import_module("mcp.client.sse"), "sse_client")
+        elif config.mcp_transport in {"streamable-http", "http"}:
+            client_factory = getattr(import_module("mcp.client.streamable_http"), "streamablehttp_client")
+        else:
+            raise KnowledgeContextError(f"unsupported knowledge MCP transport: {config.mcp_transport}")
+    except ModuleNotFoundError as exc:
+        raise KnowledgeContextError("optional dependency `mcp` is required for HYRULE_KNOWLEDGE_MCP_URL") from exc
+
+    assert config.mcp_url is not None
+    async with client_factory(config.mcp_url, timeout=config.timeout_seconds, sse_read_timeout=config.timeout_seconds) as (read_stream, write_stream, _session_id):
+        async with client_session(read_stream, write_stream) as session:
+            await session.initialize()
+            result = await session.call_tool(
+                "knowledge_context_pack",
+                {
+                    "task": task,
+                    "role": config.role,
+                    "risk_level": config.risk_level,
+                    "budget_tokens": config.budget_tokens,
+                },
+            )
+    return _mcp_tool_result_to_dict(result)
+
+
+def _mcp_tool_result_to_dict(result: Any) -> dict[str, Any]:
+    structured = getattr(result, "structuredContent", None) or getattr(result, "structured_content", None)
+    if isinstance(structured, dict):
+        return structured
+    content = getattr(result, "content", None)
+    if isinstance(content, list):
+        for item in content:
+            text = getattr(item, "text", None)
+            if isinstance(text, str):
+                loaded = json.loads(text)
+                if isinstance(loaded, dict):
+                    return loaded
+    raise KnowledgeContextError("knowledge MCP context-pack result was not a JSON object")
 
 
 def _read_fixture(path: Path) -> dict[str, Any]:
