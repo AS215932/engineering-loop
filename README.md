@@ -53,9 +53,16 @@ uv run hyrule-engineering-loop --help
 uv run hyrule-engineering-loop daemon --once
 ```
 
-A feature run can optionally include a local knowledge context pack from
+A Docker image can be built for the `loop` VM runtime shape:
+
+```bash
+docker build -t as215932/engineering-loop:local .
+docker run --rm as215932/engineering-loop:local --help
+```
+
+A feature run can optionally include a read-only knowledge context pack from
 `AS215932/knowledge` without enabling live tools, telemetry, LLM calls, or writes
-in the knowledge repo:
+in the knowledge repo. Local development can shell out to a checkout:
 
 ```bash
 uv run hyrule-engineering-loop feature CHANGE_ID \
@@ -66,6 +73,16 @@ uv run hyrule-engineering-loop feature CHANGE_ID \
   --allow docs \
   --knowledge-context \
   --knowledge-repo /home/svag/Dev/knowledge
+```
+
+On the dedicated `loop` VM, prefer the containerized knowledge MCP server over
+shelling out to a checkout:
+
+```bash
+uv run hyrule-engineering-loop daemon --once \
+  --knowledge-context \
+  --knowledge-mcp-url http://127.0.0.1:8767/mcp \
+  --knowledge-mcp-transport streamable-http
 ```
 
 A run can also write a local sanitized learning-event artifact for human
@@ -84,9 +101,9 @@ uv run hyrule-engineering-loop feature CHANGE_ID \
   --knowledge-learning-dir .engineering-loop-state/learning-events
 ```
 
-The daemon's default production scope is the seven core repos:
+The daemon's default production scope is the eight core repos:
 `engineering-loop`, `network-operations`, `hyrule-cloud`, `hyrule-web`,
-`hyrule-mcp`, `noc-agent`, and `hyrule-network-proxy`. It runs low-and-slow by
+`hyrule-mcp`, `noc-agent`, `hyrule-network-proxy`, and `as215932.net`. It runs low-and-slow by
 default: at most 2 runs/day, $10/day, and docs-only mutation boundaries unless
 a later reviewed PR widens them.
 
@@ -100,12 +117,12 @@ The backend executes generated code. CI runs only on the unprivileged
 `ci-pr` runner (label `hyrule-public-pr`); the daemon refuses to run when
 `GITHUB_ACTIONS` is set. Never schedule it on a privileged runner.
 
-Knowledge context is read-only and policy-scoped. It shells out to a local
-`hyrule-knowledge context-pack` command (or reads an explicit JSON fixture in
-tests) and stores the returned citations in graph state. It must not call live
-MCP/Prometheus/Icinga endpoints or expose secrets. Optional learning events are
-local sanitized artifacts only; humans import, review, and promote them in the
-knowledge repo.
+Knowledge context is read-only and policy-scoped. It can call the local
+`hyrule-knowledge context-pack` command, a loopback `AS215932/knowledge` MCP
+HTTP/SSE endpoint, or an explicit JSON fixture in tests. It stores returned
+citations in graph state. It must not call live Prometheus/Icinga endpoints or
+expose secrets. Optional learning events are local sanitized artifacts only;
+humans import, review, and promote them in the knowledge repo.
 
 ## Related repositories
 
