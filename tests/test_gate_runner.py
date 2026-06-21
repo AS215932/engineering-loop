@@ -61,9 +61,19 @@ def test_python_gate_uses_uv_dev_group(tmp_path, monkeypatch: pytest.MonkeyPatch
     results, errors = run_gate_commands([["ruff", "check", "."]], cwd=repo)
 
     assert errors == []
-    assert results[0]["executed_command"] == ["uv", "run", "--group", "dev", "ruff", "check", "."]
+    assert results[0]["executed_command"] == [
+        "uv",
+        "run",
+        "--locked",
+        "--group",
+        "dev",
+        "ruff",
+        "check",
+        ".",
+    ]
     assert log_path.read_text(encoding="utf-8").splitlines() == [
         "run",
+        "--locked",
         "--group",
         "dev",
         "ruff",
@@ -91,7 +101,23 @@ def test_uv_gate_uses_optional_dev_extra(tmp_path, monkeypatch: pytest.MonkeyPat
     results, errors = run_gate_commands([["uv", "run", "mypy", "."]], cwd=repo)
 
     assert errors == []
-    assert results[0]["executed_command"] == ["uv", "run", "--extra", "dev", "mypy", "."]
+    assert results[0]["executed_command"] == ["uv", "run", "--locked", "--extra", "dev", "mypy", "."]
+
+
+def test_uv_gate_preserves_explicit_frozen_guard(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log_path = tmp_path / "uv-args.txt"
+    uv = bin_dir / "uv"
+    uv.write_text("#!/bin/sh\nprintf '%s\n' \"$@\" > \"$UV_ARG_LOG\"\n", encoding="utf-8")
+    uv.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.setenv("UV_ARG_LOG", str(log_path))
+
+    results, errors = run_gate_commands([["uv", "run", "--frozen", "python", "-c", "pass"]], cwd=tmp_path)
+
+    assert errors == []
+    assert results[0]["executed_command"] == ["uv", "run", "--frozen", "python", "-c", "pass"]
 
 
 def test_python_mutations_select_repo_quality_gates_when_dev_env_exists(tmp_path) -> None:
@@ -115,7 +141,7 @@ def test_gate_output_is_visible_in_compact_trace() -> None:
             "gate_results": [
                 {
                     "command": ["ruff", "check", "."],
-                    "executed_command": ["uv", "run", "--group", "dev", "ruff", "check", "."],
+                    "executed_command": ["uv", "run", "--locked", "--group", "dev", "ruff", "check", "."],
                     "returncode": 1,
                     "status": "failed",
                     "stdout": "stdout detail",

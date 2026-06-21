@@ -12,6 +12,7 @@ from typing import Any, Iterable, Sequence
 MAX_OUTPUT_CHARS = 8_000
 PYTHON_GATE_TOOLS = frozenset({"pytest", "ruff", "mypy"})
 UV_DEV_SELECTORS = frozenset({"--group", "--extra", "--all-groups", "--all-extras"})
+UV_LOCK_GUARDS = frozenset({"--locked", "--frozen"})
 UV_OPTIONS_WITH_VALUE = frozenset(
     {
         "--config-file",
@@ -71,6 +72,17 @@ def _uv_run_has_dependency_selector(argv: Sequence[str]) -> bool:
     return any(arg in UV_DEV_SELECTORS or arg.startswith(("--group=", "--extra=")) for arg in argv)
 
 
+def _uv_run_has_lock_guard(argv: Sequence[str]) -> bool:
+    return any(arg in UV_LOCK_GUARDS for arg in argv)
+
+
+def _with_uv_lock_guard(argv: Sequence[str]) -> list[str]:
+    rendered = list(argv)
+    if len(rendered) >= 2 and _path_name(rendered[0]) == "uv" and rendered[1] == "run" and not _uv_run_has_lock_guard(rendered):
+        return [rendered[0], rendered[1], "--locked", *rendered[2:]]
+    return rendered
+
+
 def _uv_run_payload(argv_after_run: Sequence[str]) -> list[str]:
     index = 0
     argv = list(argv_after_run)
@@ -78,7 +90,9 @@ def _uv_run_payload(argv_after_run: Sequence[str]) -> list[str]:
         option = argv[index]
         if option == "--":
             return argv[index + 1 :]
-        if "=" in option:
+        if option in UV_LOCK_GUARDS:
+            index += 1
+        elif "=" in option:
             index += 1
         elif option in UV_OPTIONS_WITH_VALUE:
             index += 2
@@ -128,14 +142,19 @@ def prepare_gate_command(command: Sequence[str], *, cwd: Path | str | None = Non
 
     name = _path_name(argv[0]) if argv else ""
     if name == "uv" and len(argv) >= 2 and argv[1] == "run":
-        if _uv_run_has_dependency_selector(argv):
-            return argv
-        if _is_python_gate_payload(_uv_run_payload(argv[2:])):
-            return [*argv[:2], *dev_args, *argv[2:]]
-        return argv
+        locked = _with_uv_lock_guard(argv)
+        if not dev_args:
+            return locked
+        if _uv_run_has_dependency_selector(locked):
+            return locked
+        if _is_python_gate_payload(_uv_run_payload(locked[2:])):
+            return _with_uv_lock_guard([*argv[:2], *dev_args, *argv[2:]])
+        return locked
 
+    if not dev_args:
+        return argv
     if _is_python_gate_payload(argv):
-        return ["uv", "run", *dev_args, *argv]
+        return ["uv", "run", "--locked", *dev_args, *argv]
     return argv
 
 
