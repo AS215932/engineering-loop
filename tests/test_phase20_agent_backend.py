@@ -170,6 +170,35 @@ def test_pi_backend_parses_single_json_error_event() -> None:
     assert parsed["is_error"] is True
 
 
+def test_pi_backend_treats_assistant_error_stop_reason_as_error() -> None:
+    stdout = "\n".join(
+        json.dumps(event)
+        for event in [
+            {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "provider failed"}],
+                    "stopReason": "error",
+                    "errorMessage": "upstream provider failed",
+                    "usage": {
+                        "input": 10,
+                        "output": 2,
+                        "cost": {"total": 0.01},
+                    },
+                },
+            },
+            {"type": "turn_end", "message": {"role": "assistant", "content": []}},
+        ]
+    )
+
+    parsed = PiBackend()._parse_harness_output(stdout)
+
+    assert parsed["is_error"] is True
+    assert parsed["result"] == "provider failed"
+    assert parsed["total_cost_usd"] == 0.01
+
+
 def test_pi_backend_parses_json_event_usage_and_cost() -> None:
     stdout = "\n".join(
         json.dumps(event)

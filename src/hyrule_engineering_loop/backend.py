@@ -586,6 +586,15 @@ def _usage_from_pi_message(message: Mapping[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _pi_message_is_error(message: Mapping[str, Any]) -> bool:
+    stop_reason = str(message.get("stopReason", "")).lower()
+    return bool(
+        stop_reason in {"abort", "aborted", "cancel", "cancelled", "canceled", "error"}
+        or message.get("errorMessage")
+        or message.get("error")
+    )
+
+
 PI_JSON_EVENT_TYPES = frozenset(
     {
         "session",
@@ -634,6 +643,8 @@ def _parse_pi_json_events(stdout: str) -> dict[str, Any]:
 
         message = event.get("message")
         if isinstance(message, dict) and message.get("role") == "assistant":
+            if _pi_message_is_error(message):
+                parsed["is_error"] = True
             usage = _usage_from_pi_message(message)
             if usage is not None:
                 parsed.update(usage)
@@ -646,6 +657,8 @@ def _parse_pi_json_events(stdout: str) -> dict[str, Any]:
             for candidate in messages:
                 if not isinstance(candidate, dict) or candidate.get("role") != "assistant":
                     continue
+                if _pi_message_is_error(candidate):
+                    parsed["is_error"] = True
                 usage = _usage_from_pi_message(candidate)
                 if usage is not None:
                     parsed.update(usage)
