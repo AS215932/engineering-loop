@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -90,14 +91,17 @@ def select_gate_commands_for_mutations(paths: Iterable[str]) -> list[list[str]]:
     if any(path.endswith(".py") for path in normalized):
         return [[sys.executable, "-m", "compileall", "-q", "."]]
     if all(path.startswith("docs/") or path.endswith((".md", ".txt", ".rst")) for path in normalized):
-        return [
-            [
-                sys.executable,
-                "-c",
-                (
-                    "from pathlib import Path; "
-                    "[p.read_text(encoding='utf-8') for p in Path('.').rglob('*') if p.is_file()]"
-                ),
-            ]
-        ]
+        paths_literal = repr(json.dumps(normalized))
+        script = (
+            "import json\n"
+            "from pathlib import Path\n"
+            f"for raw in json.loads({paths_literal}):\n"
+            "    path = Path(raw)\n"
+            "    if not path.exists():\n"
+            "        continue\n"
+            "    if not path.is_file():\n"
+            "        raise SystemExit(f'not a file: {raw}')\n"
+            "    path.read_text(encoding='utf-8')\n"
+        )
+        return [[sys.executable, "-c", script]]
     return [[sys.executable, "-c", "from pathlib import Path; assert any(Path('.').rglob('*'))"]]
