@@ -77,6 +77,22 @@ LABEL_CHANGE_CLASSES: dict[str, ChangeClass] = {
 }
 HIGH_RISK_LABELS = frozenset({"critical", "security"})
 
+ISSUE_BUDGET_LABELS: dict[str, dict[str, float | int]] = {
+    # Explicit human triage signal for feature-class work that is too large for
+    # the low-and-slow timer default. These raise only the per-run cap; daily
+    # run/cost caps still apply.
+    "loop:budget-large": {
+        "max_iterations": 40,
+        "max_wall_clock_minutes": 90,
+        "max_cost_usd": 7.5,
+    },
+    "loop:budget-xl": {
+        "max_iterations": 60,
+        "max_wall_clock_minutes": 120,
+        "max_cost_usd": 10.0,
+    },
+}
+
 
 class DaemonError(RuntimeError):
     """Raised when a daemon cycle cannot run at all."""
@@ -329,6 +345,25 @@ def repo_name_for_issue(item: IntakeItem) -> str:
     return REPO_CHECKOUT_NAMES.get(short, short)
 
 
+def backend_budget_for_issue(item: IntakeItem, config: DaemonConfig) -> dict[str, float | int]:
+    """Resolve per-run backend budget, optionally raised by issue label."""
+    budget: dict[str, float | int] = {
+        "max_iterations": config.max_iterations_per_run,
+        "max_wall_clock_minutes": config.max_wall_clock_minutes_per_run,
+        "max_cost_usd": config.max_cost_usd_per_run,
+    }
+    normalized_labels = {label.lower() for label in item.labels}
+    for label, override in ISSUE_BUDGET_LABELS.items():
+        if label not in normalized_labels:
+            continue
+        budget["max_iterations"] = max(int(budget["max_iterations"]), int(override["max_iterations"]))
+        budget["max_wall_clock_minutes"] = max(
+            int(budget["max_wall_clock_minutes"]), int(override["max_wall_clock_minutes"])
+        )
+        budget["max_cost_usd"] = max(float(budget["max_cost_usd"]), float(override["max_cost_usd"]))
+    return budget
+
+
 def _issue_body(item: IntakeItem, *, client: GhClient) -> str:
     raw = client.run(
         ["issue", "view", str(item.number), "--repo", item.repo, "--json", "body"]
@@ -442,11 +477,7 @@ def daemon_once(
             allowed_paths=effective_allowed_paths,
             source_files=["README.md"],
             memory_dir=config.memory_dir,
-            backend_budget={
-                "max_iterations": config.max_iterations_per_run,
-                "max_wall_clock_minutes": config.max_wall_clock_minutes_per_run,
-                "max_cost_usd": config.max_cost_usd_per_run,
-            },
+            backend_budget=backend_budget_for_issue(item, config),
             knowledge_context=config.knowledge_context,
             knowledge_learning_dir=config.knowledge_learning_dir,
         )

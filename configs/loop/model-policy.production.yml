@@ -68,4 +68,6 @@ backends:
       command:
         - pi
         - --print
+        - --mode
+        - json
         - "{prompt}"

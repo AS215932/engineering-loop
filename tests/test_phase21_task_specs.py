@@ -23,7 +23,13 @@ from hyrule_engineering_loop.nodes import required_roles_for_state
 from hyrule_engineering_loop.prompts import load_role_prompts
 from hyrule_engineering_loop.promotion import rollback_promotions
 from hyrule_engineering_loop.state import GraphState
-from hyrule_engineering_loop.task_spec import TaskSpecError, parse_task_spec_text, render_task_spec
+from hyrule_engineering_loop.task_spec import (
+    DEFAULT_ACCEPTANCE_CRITERIA,
+    TaskSpecError,
+    extract_acceptance_criteria_from_markdown,
+    parse_task_spec_text,
+    render_task_spec,
+)
 
 
 def _run(command: list[str], cwd: Path) -> None:
@@ -158,6 +164,67 @@ def test_planner_failure_routes_to_human_signoff(tmp_path: Path) -> None:
     )
     nodes = [event["node"] for event in final_state["trace_events"]]
     assert "delegate_implementation" not in nodes
+
+
+# --- Issue-body acceptance extraction (#11) ---------------------------------
+
+
+def test_extract_acceptance_criteria_from_markdown_handles_common_issue_shapes() -> None:
+    body = """# Add VPS flow
+
+Context paragraph.
+
+## Acceptance
+
+- [ ] States and models represent VPS provisioning.
+- Smoke tests cover the no-op path.
+1. No production mutation happens without operator approval.
+
+## Notes
+
+This is not an acceptance item.
+
+### Acceptance criteria
+
+* Duplicate headings are allowed.
+* Smoke tests cover the no-op path.
+"""
+
+    assert extract_acceptance_criteria_from_markdown(body) == [
+        "States and models represent VPS provisioning.",
+        "Smoke tests cover the no-op path.",
+        "No production mutation happens without operator approval.",
+        "Duplicate headings are allowed.",
+    ]
+
+
+def test_planner_derives_acceptance_criteria_from_request_body(tmp_path: Path) -> None:
+    state = _feature_state(tmp_path, "PLANNER_ACCEPTANCE")
+    state["feature_request"] = """Add the VPS no-op launch path.
+
+## Acceptance criteria
+
+- The API has an idempotent no-op launch path.
+- `uv run --group dev pytest` passes for the target repo.
+"""
+
+    final_state = dict(build_graph().invoke(state))
+
+    assert final_state["task_spec"]["acceptance_criteria"] == [
+        "The API has an idempotent no-op launch path.",
+        "`uv run --group dev pytest` passes for the target repo.",
+    ]
+    rollback_promotions(final_state["promotion_results"])
+
+
+def test_planner_falls_back_to_generic_acceptance_without_section(tmp_path: Path) -> None:
+    state = _feature_state(tmp_path, "PLANNER_DEFAULT_ACCEPTANCE")
+    state["feature_request"] = "Add a task-spec driven tranche without explicit acceptance."
+
+    final_state = dict(build_graph().invoke(state))
+
+    assert final_state["task_spec"]["acceptance_criteria"] == list(DEFAULT_ACCEPTANCE_CRITERIA)
+    rollback_promotions(final_state["promotion_results"])
 
 
 # --- AC2: consult + judgment recorded ---------------------------------------

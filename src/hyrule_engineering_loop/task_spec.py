@@ -10,6 +10,7 @@ recorded here. Format: ``docs/engineering-loop/templates/task-spec.md``.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,15 @@ DEFAULT_BUDGET: dict[str, Any] = {
     "max_wall_clock_minutes": 45,
     "max_cost_usd": 5.0,
 }
+
+DEFAULT_ACCEPTANCE_CRITERIA = (
+    "The request is implemented within the allowed paths of each target repo.",
+    "All selected gates pass in the branch-backed worktree.",
+    "The diff introduces no secret material or denied content patterns.",
+)
+
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
+LIST_ITEM_RE = re.compile(r"^(?:[-*+]\s+(?:\[[ xX]\]\s*)?|(?:\d+|[A-Za-z])[.)]\s+)(.+)$")
 
 
 class TaskSpecError(RuntimeError):
@@ -76,12 +86,59 @@ def _numbered_items(section_text: str) -> list[str]:
         stripped = line.strip()
         if not stripped:
             continue
-        head = stripped.split(".", 1)
-        if head[0].isdigit() and len(head) == 2:
-            items.append(head[1].strip())
-        elif stripped.startswith(("- ", "* ")):
-            items.append(stripped[2:].strip())
+        match = LIST_ITEM_RE.match(stripped)
+        if match:
+            items.append(match.group(1).strip())
+            continue
+        if items and (line.startswith(("  ", "\t")) or not HEADING_RE.match(stripped)):
+            items[-1] = f"{items[-1]} {stripped}".strip()
     return [item for item in items if item and item != "..."]
+
+
+def _normalized_heading(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+
+
+def _is_acceptance_heading(title: str) -> bool:
+    normalized = _normalized_heading(title)
+    return normalized == "acceptance" or normalized.startswith("acceptance ")
+
+
+def _acceptance_sections(text: str) -> list[str]:
+    sections: list[str] = []
+    active_level: int | None = None
+    lines: list[str] = []
+    for line in text.splitlines():
+        heading = HEADING_RE.match(line.strip())
+        if heading:
+            level = len(heading.group(1))
+            title = heading.group(2).strip()
+            if active_level is not None and level <= active_level:
+                sections.append("\n".join(lines).strip())
+                lines = []
+                active_level = None
+            if active_level is None and _is_acceptance_heading(title):
+                active_level = level
+                lines = []
+                continue
+        if active_level is not None:
+            lines.append(line)
+    if active_level is not None:
+        sections.append("\n".join(lines).strip())
+    return sections
+
+
+def extract_acceptance_criteria_from_markdown(text: str) -> list[str]:
+    """Extract deterministic acceptance criteria from issue/request Markdown."""
+    criteria: list[str] = []
+    seen: set[str] = set()
+    for section in _acceptance_sections(text):
+        for item in _numbered_items(section):
+            normalized = re.sub(r"\s+", " ", item).strip()
+            if normalized and normalized not in seen:
+                criteria.append(normalized)
+                seen.add(normalized)
+    return criteria
 
 
 def _repos_with_allowed_paths(frontmatter: dict[str, Any]) -> dict[str, list[str]]:

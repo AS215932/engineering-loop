@@ -137,6 +137,11 @@ def test_subprocess_backend_command_assembly_and_refusals(tmp_path: Path) -> Non
     assert command[command.index("--max-turns") + 1] == "7"
     assert "CMD_ASSEMBLY" in command[command.index("-p") + 1]
 
+    pi_command = PiBackend().build_command(
+        prompt=assemble_backend_prompt(spec, constraints), constraints=constraints
+    )
+    assert pi_command[:4] == ["pi", "--print", "--mode", "json"]
+
     refused = PiBackend().execute(task_spec=spec, worktree=None, constraints=constraints)
     assert refused.status == "failed"
     assert "requires a branch-backed worktree" in str(refused.error)
@@ -146,6 +151,37 @@ def test_subprocess_backend_command_assembly_and_refusals(tmp_path: Path) -> Non
     )
     assert "plan" in read_only_command
     assert "acceptEdits" not in read_only_command
+
+
+def test_pi_backend_parses_json_event_usage_and_cost() -> None:
+    stdout = "\n".join(
+        json.dumps(event)
+        for event in [
+            {"type": "agent_start"},
+            {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "draft complete"}],
+                    "usage": {
+                        "input": 1323,
+                        "output": 5,
+                        "cost": {"input": 0.006615, "output": 0.00015, "total": 0.006765},
+                    },
+                },
+            },
+            {"type": "turn_end", "message": {"role": "assistant", "content": []}},
+            {"type": "agent_end", "willRetry": False},
+        ]
+    )
+
+    parsed = PiBackend()._parse_harness_output(stdout)
+
+    assert parsed["num_turns"] == 1
+    assert parsed["usage"] == {"input_tokens": 1323, "output_tokens": 5}
+    assert parsed["total_cost_usd"] == 0.006765
+    assert parsed["result"] == "draft complete"
+    assert parsed["is_error"] is False
 
 
 def test_backend_selection_follows_tier_escalation(tmp_path: Path) -> None:

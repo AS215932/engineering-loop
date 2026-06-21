@@ -548,6 +548,91 @@ class MockBackend:
         )
 
 
+def _content_text(message: Mapping[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for item in content:
+        if isinstance(item, dict) and isinstance(item.get("text"), str):
+            parts.append(str(item["text"]))
+    return "".join(parts)
+
+
+def _usage_value(raw_usage: Mapping[str, Any], primary: str, fallback: str) -> Any:
+    value = raw_usage.get(primary)
+    return raw_usage.get(fallback) if value is None else value
+
+
+def _usage_from_pi_message(message: Mapping[str, Any]) -> dict[str, Any] | None:
+    raw_usage = message.get("usage")
+    if not isinstance(raw_usage, dict):
+        return None
+    raw_cost = raw_usage.get("cost")
+    cost = raw_cost if isinstance(raw_cost, dict) else {}
+    return {
+        "usage": {
+            "input_tokens": _usage_value(raw_usage, "input", "input_tokens"),
+            "output_tokens": _usage_value(raw_usage, "output", "output_tokens"),
+        },
+        "total_cost_usd": cost.get("total") if isinstance(cost, dict) else None,
+    }
+
+
+def _parse_pi_json_events(stdout: str) -> dict[str, Any]:
+    """Map pi ``--mode json`` NDJSON events into the generic harness schema."""
+    events: list[dict[str, Any]] = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            decoded = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(decoded, dict):
+            events.append(decoded)
+    if not events:
+        return {}
+
+    parsed: dict[str, Any] = {"num_turns": 0, "is_error": False}
+    for event in events:
+        event_type = event.get("type")
+        if event_type == "turn_end":
+            parsed["num_turns"] = int(parsed.get("num_turns", 0)) + 1
+        if event_type in {"error", "agent_error"} or event.get("error"):
+            parsed["is_error"] = True
+        if event.get("willRetry") is True:
+            parsed["is_error"] = True
+
+        message = event.get("message")
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            usage = _usage_from_pi_message(message)
+            if usage is not None:
+                parsed.update(usage)
+            text = _content_text(message)
+            if text:
+                parsed["result"] = text
+
+        messages = event.get("messages")
+        if isinstance(messages, list):
+            for candidate in messages:
+                if not isinstance(candidate, dict) or candidate.get("role") != "assistant":
+                    continue
+                usage = _usage_from_pi_message(candidate)
+                if usage is not None:
+                    parsed.update(usage)
+                text = _content_text(candidate)
+                if text:
+                    parsed["result"] = text
+
+    if int(parsed.get("num_turns", 0)) < 1:
+        parsed["num_turns"] = 1
+    return parsed
+
+
 class SubprocessBackend:
     """Shared driver for real coding-agent harnesses run as subprocesses."""
 
@@ -579,7 +664,7 @@ class SubprocessBackend:
         try:
             decoded = json.loads(stdout)
         except (json.JSONDecodeError, ValueError):
-            return {}
+            return _parse_pi_json_events(stdout)
         return decoded if isinstance(decoded, dict) else {}
 
     def execute(
@@ -716,13 +801,14 @@ class SubprocessBackend:
 class PiBackend(SubprocessBackend):
     """Non-interactive ``pi`` invocation in the worktree.
 
-    The default argv mirrors the ``claude -p`` convention; override the
-    command per-deployment through the ``backends.definitions`` section of
-    ``model-policy.yml`` if the local ``pi`` build differs.
+    ``--mode json`` emits newline-delimited session events; the shared parser
+    maps those events back into the cost/usage fields the loop ledger expects.
+    Override the command per-deployment through ``model-policy.yml`` only when
+    the local ``pi`` build differs.
     """
 
     name = "pi"
-    default_command = ("pi", "--print", "{prompt}")
+    default_command = ("pi", "--print", "--mode", "json", "{prompt}")
     extra_env_names = PI_PROVIDER_ENV_NAMES
 
 

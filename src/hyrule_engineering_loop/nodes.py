@@ -35,8 +35,10 @@ from hyrule_engineering_loop.model_policy import (
     select_model_for_role,
 )
 from hyrule_engineering_loop.task_spec import (
+    DEFAULT_ACCEPTANCE_CRITERIA,
     DEFAULT_BUDGET,
     TaskSpecError,
+    extract_acceptance_criteria_from_markdown,
     parse_task_spec_text,
     render_task_spec,
     write_task_spec,
@@ -320,6 +322,9 @@ def planner_node(state: GraphState) -> StateUpdate:
             (line.strip() for line in request.splitlines() if line.strip()),
             "(no request text supplied)",
         )[:300]
+        acceptance_criteria = extract_acceptance_criteria_from_markdown(request) or list(
+            DEFAULT_ACCEPTANCE_CRITERIA
+        )
         spec = {
             "change_id": state["change_id"],
             "change_class": str(state["change_class"]),
@@ -335,11 +340,7 @@ def planner_node(state: GraphState) -> StateUpdate:
             "budget": dict(state.get("backend_budget") or DEFAULT_BUDGET),
             "intake_source": "operator",
             "intent": intent,
-            "acceptance_criteria": [
-                "The request is implemented within the allowed paths of each target repo.",
-                "All selected gates pass in the branch-backed worktree.",
-                "The diff introduces no secret material or denied content patterns.",
-            ],
+            "acceptance_criteria": acceptance_criteria,
             "non_goals": "Anything outside the allowed paths; unrelated refactors.",
             "rollback_sketch": state.get("rollback_plan")
             or "Discard the generated worktree and branch; no production state changes.",
@@ -790,8 +791,17 @@ def delegate_implementation_node(state: GraphState) -> StateUpdate:
             state["retry_counters"], retry_key or "backend"
         )
     if not state.get("gate_commands") and (changed_paths or mutations):
+        gate_worktree = next(
+            (
+                str(worktree.get("worktree_path"))
+                for worktree in state.get("worktree_results") or []
+                if worktree.get("worktree_path")
+            ),
+            None,
+        )
         update["gate_commands"] = select_gate_commands_for_mutations(
-            changed_paths or list(mutations)
+            changed_paths or list(mutations),
+            cwd=gate_worktree,
         )
     return with_trace(
         "delegate_implementation",
