@@ -19,6 +19,7 @@ from hyrule_engineering_loop.daemon import (
     notify_discord,
     notify_icinga,
     repo_name_for_issue,
+    _default_http_post,
 )
 from hyrule_engineering_loop.cli import build_parser
 from hyrule_engineering_loop.intake import IntakeItem
@@ -495,3 +496,44 @@ def test_notifications_skip_without_config(monkeypatch: pytest.MonkeyPatch) -> N
     report = DaemonReport(outcome="idle")
     assert notify_discord(report) is False
     assert notify_icinga(report) is False
+
+
+def test_default_http_post_sets_user_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    class _Response:
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    def fake_urlopen(request: Any, **kwargs: Any) -> _Response:
+        seen["headers"] = dict(request.header_items())
+        seen["kwargs"] = kwargs
+        return _Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    _default_http_post("https://discord.example/webhook", {"content": "hello"})
+
+    assert seen["headers"]["User-agent"] == "AS215932-Engineering-Loop/1.0"
+    assert seen["kwargs"] == {"timeout": 20}
+
+
+def test_notify_icinga_requests_relaxed_x509_strict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HYRULE_ICINGA_URL", "https://mon.as215932.net:5665")
+    monkeypatch.setenv("HYRULE_ICINGA_USER", "icinga-user")
+    monkeypatch.setenv("HYRULE_ICINGA_PASSWORD", "icinga-password")
+    captured: dict[str, Any] = {}
+
+    def fake_post(url: str, payload: dict[str, Any]) -> None:
+        captured["url"] = url
+        captured["payload"] = payload
+
+    assert notify_icinga(DaemonReport(outcome="idle"), poster=fake_post) is True
+
+    assert captured["url"] == "https://mon.as215932.net:5665/v1/actions/process-check-result"
+    assert captured["payload"]["_relax_x509_strict"] is True

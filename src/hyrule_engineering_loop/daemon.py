@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 import time
 import urllib.request
 from base64 import b64encode
@@ -212,11 +213,30 @@ def update_ledger(
 # --- reporting ------------------------------------------------------------
 
 
+def _relaxed_x509_strict_context() -> ssl.SSLContext:
+    """Default HTTPS context without OpenSSL's strict legacy-cert checks.
+
+    The Icinga CA is trusted locally, but its self-signed root lacks some modern
+    X.509 extensions (for example Authority Key Identifier). Keep certificate
+    chain and hostname verification enabled while disabling only the additional
+    strict-extension checks that reject this legacy internal CA.
+    """
+    context = ssl.create_default_context()
+    if hasattr(ssl, "VERIFY_X509_STRICT"):
+        context.verify_flags &= ~ssl.VERIFY_X509_STRICT
+    return context
+
+
 def _default_http_post(url: str, payload: dict[str, Any]) -> None:
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        # Discord rejects Python's default urllib User-Agent with HTTP 403.
+        "User-Agent": "AS215932-Engineering-Loop/1.0",
+    }
     auth = payload.pop("_basic_auth", None)
     if isinstance(auth, str):
         headers["Authorization"] = f"Basic {auth}"
+    relax_x509_strict = bool(payload.pop("_relax_x509_strict", False))
     headers.update(payload.pop("_headers", {}))
     request = urllib.request.Request(
         url,
@@ -224,7 +244,10 @@ def _default_http_post(url: str, payload: dict[str, Any]) -> None:
         headers=headers,
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=20):
+    urlopen_kwargs: dict[str, Any] = {"timeout": 20}
+    if relax_x509_strict and url.startswith("https://"):
+        urlopen_kwargs["context"] = _relaxed_x509_strict_context()
+    with urllib.request.urlopen(request, **urlopen_kwargs):
         pass
 
 
@@ -275,6 +298,7 @@ def notify_icinga(report: DaemonReport, *, poster: Poster | None = None) -> bool
         ),
         "_basic_auth": b64encode(f"{user}:{password}".encode()).decode(),
         "_headers": {"Accept": "application/json"},
+        "_relax_x509_strict": True,
     }
     (poster or _default_http_post)(
         f"{url.rstrip('/')}/v1/actions/process-check-result", payload
