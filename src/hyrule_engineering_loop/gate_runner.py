@@ -131,9 +131,23 @@ def _uv_option_value(options: Sequence[str], name: str) -> list[str]:
     return values
 
 
+def _uv_run_excludes_required_dev_selector(argv: Sequence[str], dev_args: tuple[str, str] | tuple[()]) -> bool:
+    if not dev_args:
+        return False
+    options = _uv_run_option_args(argv)
+    selector, value = dev_args
+    if selector == "--group":
+        return "--no-dev" in options or value in _uv_option_value(options, "--no-group")
+    if selector == "--extra":
+        return value in _uv_option_value(options, "--no-extra")
+    return False
+
+
 def _uv_run_has_required_dev_selector(argv: Sequence[str], dev_args: tuple[str, str] | tuple[()]) -> bool:
     if not dev_args:
         return True
+    if _uv_run_excludes_required_dev_selector(argv, dev_args):
+        return False
     options = _uv_run_option_args(argv)
     selector, value = dev_args
     if selector == "--group":
@@ -146,6 +160,23 @@ def _uv_run_has_required_dev_selector(argv: Sequence[str], dev_args: tuple[str, 
     if selector == "--extra":
         return "--all-extras" in options or value in _uv_option_value(options, "--extra")
     return False
+
+
+def gate_command_preparation_error(command: Sequence[str], *, cwd: Path | str | None = None) -> str | None:
+    """Return a fail-closed preparation error before executing a gate."""
+    argv = list(command)
+    if len(argv) < 2 or _path_name(argv[0]) != "uv" or argv[1] != "run":
+        return None
+    cwd_path = Path(cwd).expanduser().resolve() if cwd is not None else None
+    dev_args = _uv_dev_args(cwd_path)
+    if not dev_args:
+        return None
+    if not _is_python_gate_payload(_uv_run_payload(argv[2:])):
+        return None
+    if _uv_run_excludes_required_dev_selector(argv, dev_args):
+        selector, value = dev_args
+        return f"uv gate excludes required dev dependencies ({selector} {value})"
+    return None
 
 
 def _uv_run_has_lock_guard(argv: Sequence[str]) -> bool:
@@ -252,6 +283,30 @@ def run_gate_commands(
         if not argv:
             raise ValueError("gate command cannot be empty")
         prepared = prepare_gate_command(argv, cwd=cwd)
+        preparation_error = gate_command_preparation_error(argv, cwd=cwd)
+        if preparation_error:
+            result = {
+                "command": argv,
+                "executed_command": prepared,
+                "returncode": 126,
+                "status": "failed",
+                "stdout": "",
+                "stderr": _clip(preparation_error),
+            }
+            results.append(result)
+            errors.append(
+                {
+                    "node": "gate_execution",
+                    "domain": "ci",
+                    "message": preparation_error,
+                    "command": argv,
+                    "executed_command": prepared,
+                    "returncode": result["returncode"],
+                    "stdout": "",
+                    "stderr": result["stderr"],
+                }
+            )
+            continue
 
         try:
             completed = subprocess.run(

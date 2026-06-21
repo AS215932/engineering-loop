@@ -131,6 +131,34 @@ def test_policy_node_stops_graph_before_promotion(tmp_path: Path) -> None:
     assert "promotion_status" not in final_state
 
 
+def test_policy_rejects_uv_gate_that_excludes_required_dev_deps(tmp_path: Path) -> None:
+    policy_path = _write_policy(
+        tmp_path / "policy.yml",
+        {
+            "defaults": {
+                "max_changed_files": 3,
+                "max_file_bytes": 100,
+                "denied_path_globs": [],
+                "denied_content_patterns": [],
+                "allowed_gate_commands": ["uv"],
+                "protected_branch_prefixes": [],
+                "allowed_pr_remotes": ["origin"],
+                "allowed_handoff_dirs": [str(tmp_path)],
+            }
+        },
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text("[dependency-groups]\ndev = ['pytest']\n", encoding="utf-8")
+    state = _base_state(policy_path)
+    state["gate_commands"] = [["uv", "run", "--all-groups", "--no-group", "dev", "pytest", "-q"]]
+    state["worktree_results"] = [{"repo": "demo", "worktree_path": str(repo)}]
+
+    violations = validate_gate_commands_for_state(state)
+
+    assert "uv gate excludes required dev dependencies (--group dev)" in violations
+
+
 def test_policy_validates_prepared_gate_command(tmp_path: Path) -> None:
     policy_path = _write_policy(
         tmp_path / "policy.yml",

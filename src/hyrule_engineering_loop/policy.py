@@ -11,7 +11,7 @@ from typing import Any
 
 import yaml
 
-from hyrule_engineering_loop.gate_runner import prepare_gate_command
+from hyrule_engineering_loop.gate_runner import gate_command_preparation_error, prepare_gate_command
 from hyrule_engineering_loop.state import GraphState
 from hyrule_engineering_loop.workspace import _safe_relative_path
 
@@ -271,6 +271,9 @@ def _validate_gate_commands(state: GraphState, policy: dict[str, Any]) -> list[s
     ) -> None:
         if not command:
             return
+        preparation_error = gate_command_preparation_error(command, cwd=cwd)
+        if preparation_error:
+            violations.append(preparation_error)
         prepared = prepare_gate_command(command, cwd=cwd)
         if prepared == command:
             return

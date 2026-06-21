@@ -160,6 +160,23 @@ def test_uv_value_option_does_not_hide_python_gate_payload(
     ]
 
 
+def test_uv_no_group_dev_exclusion_fails_closed(tmp_path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[dependency-groups]\ndev = ['pytest']\n",
+        encoding="utf-8",
+    )
+
+    results, errors = run_gate_commands(
+        [["uv", "run", "--all-groups", "--no-group", "dev", "pytest", "-q"]],
+        cwd=tmp_path,
+    )
+
+    assert results[0]["returncode"] == 126
+    assert results[0]["status"] == "failed"
+    assert "excludes required dev dependencies" in results[0]["stderr"]
+    assert errors[0]["domain"] == "ci"
+
+
 def test_uv_only_group_dev_satisfies_dev_selector(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
