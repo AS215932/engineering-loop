@@ -529,9 +529,9 @@ def test_auto_gate_selection_is_per_worktree(tmp_path: Path) -> None:
     assert "gate_commands" not in update
     assert update["gate_commands_by_repo"] == {
         "python-repo": [
-            ["uv", "run", "python", "-m", "pytest", "-q"],
-            ["uv", "run", "ruff", "check", "."],
-            ["uv", "run", "mypy", "python_repo"],
+            ["uv", "run", "python", "-m", "pytest", "-q", "-p", "no:cacheprovider"],
+            ["uv", "run", "ruff", "check", "--no-cache", "."],
+            ["uv", "run", "mypy", "--no-incremental", "python_repo"],
         ]
     }
     rollback_promotions(worktrees)

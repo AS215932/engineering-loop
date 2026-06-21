@@ -408,9 +408,9 @@ def select_gate_commands_for_mutations(
         cwd_path = Path(cwd).expanduser().resolve() if cwd is not None else None
         if _uv_dev_args(cwd_path):
             return [
-                ["uv", "run", "python", "-m", "pytest", "-q"],
-                ["uv", "run", "ruff", "check", "."],
-                ["uv", "run", "mypy", *_mypy_targets(normalized)],
+                ["uv", "run", "python", "-m", "pytest", "-q", "-p", "no:cacheprovider"],
+                ["uv", "run", "ruff", "check", "--no-cache", "."],
+                ["uv", "run", "mypy", "--no-incremental", *_mypy_targets(normalized)],
             ]
         return [[sys.executable, "-m", "compileall", "-q", "."]]
     if all(path.startswith("docs/") or path.endswith((".md", ".txt", ".rst")) for path in normalized):

@@ -399,10 +399,23 @@ def test_python_mutations_select_repo_quality_gates_when_dev_env_exists(tmp_path
     commands = select_gate_commands_for_mutations(["hyrule_cloud/api.py"], cwd=tmp_path)
 
     assert commands == [
-        ["uv", "run", "python", "-m", "pytest", "-q"],
-        ["uv", "run", "ruff", "check", "."],
-        ["uv", "run", "mypy", "hyrule_cloud"],
+        ["uv", "run", "python", "-m", "pytest", "-q", "-p", "no:cacheprovider"],
+        ["uv", "run", "ruff", "check", "--no-cache", "."],
+        ["uv", "run", "mypy", "--no-incremental", "hyrule_cloud"],
     ]
+
+
+def test_python_mutation_gates_disable_worktree_cache_dirs(tmp_path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[dependency-groups]\ndev = ['pytest', 'ruff', 'mypy']\n",
+        encoding="utf-8",
+    )
+
+    commands = select_gate_commands_for_mutations(["pkg/module.py"], cwd=tmp_path)
+
+    assert ["-p", "no:cacheprovider"] == commands[0][-2:]
+    assert "--no-cache" in commands[1]
+    assert "--no-incremental" in commands[2]
 
 
 def test_gate_output_is_visible_in_compact_trace() -> None:
