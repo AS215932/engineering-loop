@@ -11,6 +11,7 @@ from typing import Any
 
 import yaml
 
+from hyrule_engineering_loop.gate_runner import prepare_gate_command
 from hyrule_engineering_loop.state import GraphState
 from hyrule_engineering_loop.workspace import _safe_relative_path
 
@@ -262,11 +263,41 @@ def _validate_gate_commands(state: GraphState, policy: dict[str, Any]) -> list[s
         if name not in allowed:
             violations.append(f"{prefix} not allowlisted: {name}")
 
+    def check_prepared(
+        command: list[str],
+        *,
+        cwd: str | None,
+        prefix: str = "prepared gate command",
+    ) -> None:
+        if not command:
+            return
+        prepared = prepare_gate_command(command, cwd=cwd)
+        if prepared == command:
+            return
+        check(prepared, prefix=prefix)
+
+    worktree_cwds = [
+        str(worktree.get("worktree_path"))
+        for worktree in state.get("worktree_results") or []
+        if worktree.get("worktree_path")
+    ]
+    workspace_cwd = state.get("workspace_root")
+    global_cwds: list[str | None] = list(worktree_cwds) if worktree_cwds else [workspace_cwd]
+    cwd_by_repo = {
+        str(worktree.get("repo", "")): str(worktree.get("worktree_path"))
+        for worktree in state.get("worktree_results") or []
+        if worktree.get("repo") and worktree.get("worktree_path")
+    }
+
     for command in state.get("gate_commands", []):
         check(command)
+        for cwd in global_cwds:
+            check_prepared(command, cwd=cwd)
     for repo, commands in state.get("gate_commands_by_repo", {}).items():
+        cwd = cwd_by_repo.get(repo, workspace_cwd)
         for command in commands:
             check(command, prefix=f"gate command for {repo}")
+            check_prepared(command, cwd=cwd, prefix=f"prepared gate command for {repo}")
     return violations
 
 
