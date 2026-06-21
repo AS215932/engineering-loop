@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, cast
 
@@ -261,6 +262,35 @@ def test_backend_selection_follows_tier_escalation(tmp_path: Path) -> None:
     result = validate_model_policy(bad_policy)
     assert result["ok"] is False
     assert any("unknown default backend" in error for error in result["errors"])
+
+
+def test_subprocess_backend_enforces_reported_cost_budget(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    backend = ClaudeCodeBackend(
+        command=[
+            sys.executable,
+            "-c",
+            "import json; print(json.dumps({'num_turns': 2, 'total_cost_usd': 2.5, 'usage': {'input_tokens': 10, 'output_tokens': 20}, 'result': 'done'}))",
+        ]
+    )
+    spec = TaskSpec(
+        change_id="COST_BUDGET",
+        change_class="app_feature",
+        risk_level="low",
+        request="exercise cost budget",
+        allowed_paths={"repo": ("docs",)},
+    )
+
+    result = backend.execute(
+        task_spec=spec,
+        worktree=repo,
+        constraints=BackendConstraints(max_cost_usd=1.0),
+    )
+
+    assert result.status == "budget_exhausted"
+    assert result.cost.usd == 2.5
+    assert "exceeded run budget" in result.notes
 
 
 def test_budget_exhaustion_routes_to_human_signoff(tmp_path: Path) -> None:

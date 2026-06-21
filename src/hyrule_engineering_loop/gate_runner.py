@@ -15,23 +15,51 @@ UV_DEV_SELECTORS = frozenset({"--group", "--extra", "--all-groups", "--all-extra
 UV_LOCK_GUARDS = frozenset({"--locked", "--frozen"})
 UV_OPTIONS_WITH_VALUE = frozenset(
     {
+        "--allow-insecure-host",
+        "--cache-dir",
+        "--color",
         "--config-file",
+        "--config-setting",
+        "--config-settings-package",
+        "--default-index",
         "--directory",
         "--env-file",
         "--exclude-newer",
+        "--exclude-newer-package",
         "--extra",
+        "--extra-index-url",
+        "--find-links",
+        "--fork-strategy",
         "--group",
         "--index",
+        "--index-strategy",
         "--index-url",
         "--keyring-provider",
+        "--link-mode",
+        "--no-binary-package",
+        "--no-build-isolation-package",
+        "--no-build-package",
+        "--no-editable-package",
+        "--no-extra",
         "--no-group",
+        "--no-sources-package",
+        "--only-group",
+        "--package",
+        "--prerelease",
         "--project",
         "--python",
+        "--python-platform",
+        "--refresh-package",
+        "--reinstall-package",
         "--resolution",
+        "--upgrade-group",
+        "--upgrade-package",
         "--with",
         "--with-editable",
+        "--with-requirements",
     }
 )
+UV_SHORT_OPTIONS_WITH_VALUE = frozenset({"-C", "-P", "-f", "-i", "-p", "-w"})
 
 
 def _clip(text: str) -> str:
@@ -78,16 +106,41 @@ def _uv_run_option_args(argv: Sequence[str]) -> list[str]:
         options.append(option)
         if "=" in option:
             index += 1
-        elif option in UV_OPTIONS_WITH_VALUE:
+        elif option in UV_OPTIONS_WITH_VALUE or option in UV_SHORT_OPTIONS_WITH_VALUE:
+            if index + 1 < len(argv):
+                options.append(argv[index + 1])
             index += 2
         else:
             index += 1
     return options
 
 
-def _uv_run_has_dependency_selector(argv: Sequence[str]) -> bool:
+def _uv_option_value(options: Sequence[str], name: str) -> list[str]:
+    values: list[str] = []
+    index = 0
+    while index < len(options):
+        option = options[index]
+        if option == name and index + 1 < len(options):
+            values.append(options[index + 1])
+            index += 2
+            continue
+        prefix = f"{name}="
+        if option.startswith(prefix):
+            values.append(option[len(prefix) :])
+        index += 1
+    return values
+
+
+def _uv_run_has_required_dev_selector(argv: Sequence[str], dev_args: tuple[str, str] | tuple[()]) -> bool:
+    if not dev_args:
+        return True
     options = _uv_run_option_args(argv)
-    return any(arg in UV_DEV_SELECTORS or arg.startswith(("--group=", "--extra=")) for arg in options)
+    selector, value = dev_args
+    if selector == "--group":
+        return "--all-groups" in options or value in _uv_option_value(options, "--group")
+    if selector == "--extra":
+        return "--all-extras" in options or value in _uv_option_value(options, "--extra")
+    return False
 
 
 def _uv_run_has_lock_guard(argv: Sequence[str]) -> bool:
@@ -112,7 +165,7 @@ def _uv_run_payload(argv_after_run: Sequence[str]) -> list[str]:
             index += 1
         elif "=" in option:
             index += 1
-        elif option in UV_OPTIONS_WITH_VALUE:
+        elif option in UV_OPTIONS_WITH_VALUE or option in UV_SHORT_OPTIONS_WITH_VALUE:
             index += 2
         else:
             index += 1
@@ -161,7 +214,7 @@ def prepare_gate_command(command: Sequence[str], *, cwd: Path | str | None = Non
         locked = _with_uv_lock_guard(argv)
         if not dev_args:
             return locked
-        if _uv_run_has_dependency_selector(locked):
+        if _uv_run_has_required_dev_selector(locked, dev_args):
             return locked
         if _is_python_gate_payload(_uv_run_payload(locked[2:])):
             return _with_uv_lock_guard([*argv[:2], *dev_args, *argv[2:]])

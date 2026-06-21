@@ -317,6 +317,41 @@ def test_daemon_passes_issue_budget_override_to_feature_runner(tmp_path: Path) -
     }
 
 
+def test_daemon_blocks_publication_when_reported_cost_exceeds_run_budget(tmp_path: Path) -> None:
+    def runner(**kwargs: Any) -> dict[str, Any]:
+        return {
+            "state_path": str(kwargs["output_root"] / "state" / f"{kwargs['change_id']}.json"),
+            "signoff_status": "ready_for_review",
+            "final_state": {
+                "promotion_results": [{"repo": "hyrule-cloud", "branch": "b", "worktree_path": "w"}],
+                "noc_handoff_path": "h",
+                "backend_results": [{"cost": {"usd": 6.0}}],
+                "reflection_results": {"written": True},
+            },
+        }
+
+    published: list[dict[str, Any]] = []
+    repo = "AS215932/hyrule-cloud"
+    config = DaemonConfig(repos=(repo,), state_dir=tmp_path / "state", output_root=tmp_path / "runs")
+    gh = FakeGh(
+        {
+            "issue list": _approved_issue_json(13, repo=repo, labels=["loop:approved"]),
+            "issue view": json.dumps({"body": "x"}),
+        }
+    )
+
+    report = daemon_once(
+        config,
+        client=gh,
+        feature_runner=runner,
+        publisher=lambda state, **kwargs: published.append(state) or [],
+    )
+
+    assert report.outcome == "needs_triage"
+    assert "exceeded budget" in report.detail
+    assert published == []
+
+
 def test_daemon_clamps_issue_budget_to_remaining_daily_cost(tmp_path: Path) -> None:
     captured: dict[str, Any] = {}
 

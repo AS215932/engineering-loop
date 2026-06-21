@@ -276,7 +276,12 @@ def assemble_backend_prompt(task_spec: TaskSpec, constraints: BackendConstraints
         "- Touch only paths under the allowed prefixes below; anything else fails policy.",
         "- No secret material, credentials, or environment-specific tokens in any file.",
         f"- Budget: {constraints.max_iterations} iterations, "
-        f"{int(constraints.max_wall_clock_seconds)}s wall clock.",
+        f"{int(constraints.max_wall_clock_seconds)}s wall clock"
+        + (
+            f", ${constraints.max_cost_usd:.2f} reported harness cost."
+            if constraints.max_cost_usd is not None
+            else "."
+        ),
     ])
     for repo, prefixes in sorted(task_spec.allowed_paths.items()):
         lines.append(f"- Allowed paths ({repo}): {', '.join(prefixes) or 'none configured'}")
@@ -808,6 +813,24 @@ class SubprocessBackend:
                 iterations=iterations,
                 cost=cost,
                 error=f"harness exited with code {returncode}",
+            )
+        if (
+            constraints.max_cost_usd is not None
+            and cost.reported
+            and cost.usd is not None
+            and cost.usd > constraints.max_cost_usd
+        ):
+            return _result(
+                "budget_exhausted",
+                diff=diff,
+                changed=tuple(changed),
+                transcript=transcript_path,
+                iterations=iterations,
+                cost=cost,
+                notes=(
+                    f"reported harness cost ${cost.usd:.4f} exceeded "
+                    f"run budget ${constraints.max_cost_usd:.4f}; partial work kept for inspection"
+                ),
             )
         return _result(
             "completed",
