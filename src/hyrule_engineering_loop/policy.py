@@ -253,13 +253,20 @@ def _validate_gate_commands(state: GraphState, policy: dict[str, Any]) -> list[s
         return []
 
     violations: list[str] = []
-    for command in state.get("gate_commands", []):
+
+    def check(command: list[str], *, prefix: str = "gate command") -> None:
         if not command:
-            violations.append("gate command cannot be empty")
-            continue
+            violations.append(f"{prefix} cannot be empty")
+            return
         name = Path(command[0]).name
         if name not in allowed:
-            violations.append(f"gate command not allowlisted: {name}")
+            violations.append(f"{prefix} not allowlisted: {name}")
+
+    for command in state.get("gate_commands", []):
+        check(command)
+    for repo, commands in state.get("gate_commands_by_repo", {}).items():
+        for command in commands:
+            check(command, prefix=f"gate command for {repo}")
     return violations
 
 

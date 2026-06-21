@@ -74,6 +74,7 @@ def _summarize_value(key: str, value: Any) -> Any:
     if key in {"gate_results"} and isinstance(value, list):
         return [
             {
+                "repo": item.get("repo"),
                 "command": item.get("command"),
                 "executed_command": item.get("executed_command", item.get("command")),
                 "status": item.get("status"),

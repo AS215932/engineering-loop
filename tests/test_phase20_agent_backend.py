@@ -22,8 +22,9 @@ from hyrule_engineering_loop.backend import (
 from hyrule_engineering_loop.cli import main
 from hyrule_engineering_loop.feature import build_feature_state
 from hyrule_engineering_loop.graph import build_graph
+from hyrule_engineering_loop.nodes import delegate_implementation_node
 from hyrule_engineering_loop.model_policy import select_backend_for_state, validate_model_policy
-from hyrule_engineering_loop.promotion import rollback_promotions
+from hyrule_engineering_loop.promotion import rollback_promotions, setup_worktrees_for_state
 from hyrule_engineering_loop.state import GraphState
 
 
@@ -362,6 +363,78 @@ def test_policy_guard_enforces_changed_file_cap(tmp_path: Path) -> None:
     )
 
     rollback_promotions(final_state["worktree_results"])
+
+
+def test_auto_gate_selection_is_per_worktree(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    _init_repo(workspace_root / "docs-repo")
+    _init_repo(workspace_root / "python-repo")
+    (workspace_root / "python-repo" / "pyproject.toml").write_text(
+        "[dependency-groups]\ndev = ['pytest', 'ruff', 'mypy']\n",
+        encoding="utf-8",
+    )
+    (workspace_root / "python-repo" / "python_repo").mkdir()
+    (workspace_root / "python-repo" / "python_repo" / "__init__.py").write_text("", encoding="utf-8")
+    _run(["git", "add", "pyproject.toml", "python_repo/__init__.py"], workspace_root / "python-repo")
+    _run(["git", "commit", "-m", "add python project"], workspace_root / "python-repo")
+
+    state = cast(
+        GraphState,
+        {
+            "change_id": "MULTI_REPO_GATES",
+            "change_class": "app_feature",
+            "risk_level": "low",
+            "customer_impact": "none",
+            "source_of_truth_files": [],
+            "proposed_mutations": {},
+            "mcp_schema_breaking": False,
+            "emulated_lab_verified": "not_applicable",
+            "validation_errors": [],
+            "role_approvals": {},
+            "retry_counters": {},
+            "rollback_plan": "",
+            "noc_handoff_metadata": {},
+            "requires_human_signoff": False,
+            "promotion_enabled": True,
+            "promotion_repositories": {
+                "docs-repo": str(workspace_root / "docs-repo"),
+                "python-repo": str(workspace_root / "python-repo"),
+            },
+            "promotion_allowed_paths": {
+                "docs-repo": ["docs"],
+                "python-repo": ["python_repo"],
+            },
+            "promotion_worktree_root": str(tmp_path / "worktrees"),
+            "promotion_branch_prefix": "hyrule-feature",
+            "feature_request": "exercise per-worktree gate selection",
+            "llm_mock_responses": {
+                "implementation_writer": {
+                    "approved": True,
+                    "proposed_mutations": [
+                        {
+                            "path": "python-repo:python_repo/change.py",
+                            "content": "VALUE = 1\n",
+                            "operation": "create",
+                        }
+                    ],
+                }
+            },
+        },
+    )
+    worktrees = setup_worktrees_for_state(state)
+    state["worktree_results"] = worktrees
+
+    update = delegate_implementation_node(state)
+
+    assert "gate_commands" not in update
+    assert update["gate_commands_by_repo"] == {
+        "python-repo": [
+            ["uv", "run", "python", "-m", "pytest", "-q"],
+            ["uv", "run", "ruff", "check", "."],
+            ["uv", "run", "mypy", "python_repo"],
+        ]
+    }
+    rollback_promotions(worktrees)
 
 
 def test_backend_canary_dry_live_assembles_without_execution(

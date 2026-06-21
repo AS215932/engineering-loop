@@ -345,7 +345,12 @@ def repo_name_for_issue(item: IntakeItem) -> str:
     return REPO_CHECKOUT_NAMES.get(short, short)
 
 
-def backend_budget_for_issue(item: IntakeItem, config: DaemonConfig) -> dict[str, float | int]:
+def backend_budget_for_issue(
+    item: IntakeItem,
+    config: DaemonConfig,
+    *,
+    remaining_cost_usd: float | None = None,
+) -> dict[str, float | int]:
     """Resolve per-run backend budget, optionally raised by issue label."""
     budget: dict[str, float | int] = {
         "max_iterations": config.max_iterations_per_run,
@@ -361,6 +366,8 @@ def backend_budget_for_issue(item: IntakeItem, config: DaemonConfig) -> dict[str
             int(budget["max_wall_clock_minutes"]), int(override["max_wall_clock_minutes"])
         )
         budget["max_cost_usd"] = max(float(budget["max_cost_usd"]), float(override["max_cost_usd"]))
+    if remaining_cost_usd is not None:
+        budget["max_cost_usd"] = max(0.0, min(float(budget["max_cost_usd"]), remaining_cost_usd))
     return budget
 
 
@@ -451,6 +458,16 @@ def daemon_once(
         item = queue[0]
         change_class, risk = classify_issue(item)
         change_id = _change_id_for(item)
+        remaining_cost_usd = config.max_cost_usd_per_day - float(ledger.get("cost_usd", 0.0))
+        if remaining_cost_usd <= 0:
+            return _finish(
+                DaemonReport(
+                    outcome="over_budget",
+                    detail=f"daily cost budget reached (${config.max_cost_usd_per_day:.2f})",
+                ),
+                discord_poster,
+                icinga_poster,
+            )
         body = _issue_body(item, client=client)
 
         output_root = config.output_root.expanduser().resolve() / change_id.lower()
@@ -477,7 +494,11 @@ def daemon_once(
             allowed_paths=effective_allowed_paths,
             source_files=["README.md"],
             memory_dir=config.memory_dir,
-            backend_budget=backend_budget_for_issue(item, config),
+            backend_budget=backend_budget_for_issue(
+                item,
+                config,
+                remaining_cost_usd=remaining_cost_usd,
+            ),
             knowledge_context=config.knowledge_context,
             knowledge_learning_dir=config.knowledge_learning_dir,
         )

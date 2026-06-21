@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -238,6 +239,23 @@ def test_loop_budget_label_raises_only_the_per_issue_run_budget() -> None:
     assert budget == {"max_iterations": 60, "max_wall_clock_minutes": 120, "max_cost_usd": 10.0}
 
 
+def test_loop_budget_label_is_clamped_to_remaining_daily_cost() -> None:
+    item = IntakeItem(
+        repo="AS215932/hyrule-cloud",
+        number=12,
+        title="Feature-sized work",
+        url="u",
+        labels=("loop:approved", "loop:budget-xl"),
+        updated_at="",
+        score=0.0,
+        body_complete=True,
+    )
+
+    budget = backend_budget_for_issue(item, DaemonConfig(), remaining_cost_usd=4.25)
+
+    assert budget == {"max_iterations": 60, "max_wall_clock_minutes": 120, "max_cost_usd": 4.25}
+
+
 def _capture_allowed_paths(tmp_path: Path, config_kwargs: dict[str, Any], repo: str = "AS215932/hyrule-cloud") -> dict[str, Any]:
     captured: dict[str, Any] = {}
 
@@ -296,6 +314,38 @@ def test_daemon_passes_issue_budget_override_to_feature_runner(tmp_path: Path) -
         "max_iterations": 60,
         "max_wall_clock_minutes": 120,
         "max_cost_usd": 10.0,
+    }
+
+
+def test_daemon_clamps_issue_budget_to_remaining_daily_cost(tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+
+    def runner(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"final_state": {}, "state_path": str(tmp_path / "state.json")}
+
+    repo = "AS215932/hyrule-cloud"
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    day = datetime.now(UTC).strftime("%Y-%m-%d")
+    (state_dir / f"ledger-{day}.json").write_text(
+        json.dumps({"runs": 1, "cost_usd": 6.0, "wall_clock_seconds": 10.0}),
+        encoding="utf-8",
+    )
+    config = DaemonConfig(repos=(repo,), state_dir=state_dir, output_root=tmp_path / "runs")
+    gh = FakeGh(
+        {
+            "issue list": _approved_issue_json(12, repo=repo, labels=["loop:approved", "loop:budget-xl"]),
+            "issue view": json.dumps({"body": "x"}),
+        }
+    )
+
+    daemon_once(config, client=gh, feature_runner=runner)
+
+    assert captured["backend_budget"] == {
+        "max_iterations": 60,
+        "max_wall_clock_minutes": 120,
+        "max_cost_usd": 4.0,
     }
 
 

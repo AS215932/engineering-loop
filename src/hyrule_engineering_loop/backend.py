@@ -901,13 +901,17 @@ def task_spec_from_state(state: GraphState) -> TaskSpec:
         if tail:
             journal_parts.append(tail)
 
+    gate_commands: list[list[str]] = list(state.get("gate_commands", []))
+    for commands in state.get("gate_commands_by_repo", {}).values():
+        gate_commands.extend(commands)
+
     return TaskSpec(
         change_id=state["change_id"],
         change_class=str(state["change_class"]),
         risk_level=str(state["risk_level"]),
         request=state.get("feature_request", ""),
         allowed_paths=allowed,
-        gate_commands=tuple(tuple(command) for command in state.get("gate_commands", [])),
+        gate_commands=tuple(tuple(command) for command in gate_commands),
         transcript_dir=state.get("handoff_output_dir") or os.environ.get("HYRULE_HANDOFF_DIR"),
         intent=str(spec.get("intent", "")),
         acceptance_criteria=tuple(criteria),
