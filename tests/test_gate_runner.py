@@ -124,6 +124,65 @@ def test_explicit_uv_gate_without_dev_env_still_gets_lock_guard(
     assert results[0]["executed_command"] == ["uv", "run", "--locked", "python", "-c", "pass"]
 
 
+def test_uv_payload_lock_like_arg_does_not_count_as_lock_guard(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log_path = tmp_path / "uv-args.txt"
+    uv = bin_dir / "uv"
+    uv.write_text("#!/bin/sh\nprintf '%s\n' \"$@\" > \"$UV_ARG_LOG\"\n", encoding="utf-8")
+    uv.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.setenv("UV_ARG_LOG", str(log_path))
+
+    results, errors = run_gate_commands(
+        [["uv", "run", "python", "tools/check.py", "--locked"]],
+        cwd=tmp_path,
+    )
+
+    assert errors == []
+    assert results[0]["executed_command"] == [
+        "uv",
+        "run",
+        "--locked",
+        "python",
+        "tools/check.py",
+        "--locked",
+    ]
+
+
+def test_uv_double_dash_payload_lock_like_arg_does_not_count_as_lock_guard(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log_path = tmp_path / "uv-args.txt"
+    uv = bin_dir / "uv"
+    uv.write_text("#!/bin/sh\nprintf '%s\n' \"$@\" > \"$UV_ARG_LOG\"\n", encoding="utf-8")
+    uv.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.setenv("UV_ARG_LOG", str(log_path))
+
+    results, errors = run_gate_commands(
+        [["uv", "run", "--", "python", "tools/check.py", "--frozen"]],
+        cwd=tmp_path,
+    )
+
+    assert errors == []
+    assert results[0]["executed_command"] == [
+        "uv",
+        "run",
+        "--locked",
+        "--",
+        "python",
+        "tools/check.py",
+        "--frozen",
+    ]
+
+
 def test_uv_gate_preserves_explicit_frozen_guard(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()

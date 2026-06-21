@@ -68,12 +68,32 @@ def _is_python_gate_payload(argv: Sequence[str]) -> bool:
     return _is_python_executable(name) and len(argv) >= 3 and argv[1] == "-m" and argv[2] in PYTHON_GATE_TOOLS
 
 
+def _uv_run_option_args(argv: Sequence[str]) -> list[str]:
+    if len(argv) < 2 or _path_name(argv[0]) != "uv" or argv[1] != "run":
+        return []
+    options: list[str] = []
+    index = 2
+    while index < len(argv) and argv[index].startswith("-"):
+        option = argv[index]
+        if option == "--":
+            break
+        options.append(option)
+        if "=" in option:
+            index += 1
+        elif option in UV_OPTIONS_WITH_VALUE:
+            index += 2
+        else:
+            index += 1
+    return options
+
+
 def _uv_run_has_dependency_selector(argv: Sequence[str]) -> bool:
-    return any(arg in UV_DEV_SELECTORS or arg.startswith(("--group=", "--extra=")) for arg in argv)
+    options = _uv_run_option_args(argv)
+    return any(arg in UV_DEV_SELECTORS or arg.startswith(("--group=", "--extra=")) for arg in options)
 
 
 def _uv_run_has_lock_guard(argv: Sequence[str]) -> bool:
-    return any(arg in UV_LOCK_GUARDS for arg in argv)
+    return any(arg in UV_LOCK_GUARDS for arg in _uv_run_option_args(argv))
 
 
 def _with_uv_lock_guard(argv: Sequence[str]) -> list[str]:
