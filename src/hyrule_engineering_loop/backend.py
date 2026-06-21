@@ -581,6 +581,26 @@ def _usage_from_pi_message(message: Mapping[str, Any]) -> dict[str, Any] | None:
     }
 
 
+PI_JSON_EVENT_TYPES = frozenset(
+    {
+        "session",
+        "agent_start",
+        "turn_start",
+        "message_start",
+        "message_update",
+        "message_end",
+        "turn_end",
+        "agent_end",
+        "error",
+        "agent_error",
+    }
+)
+
+
+def _is_pi_json_event(value: Mapping[str, Any]) -> bool:
+    return value.get("type") in PI_JSON_EVENT_TYPES
+
+
 def _parse_pi_json_events(stdout: str) -> dict[str, Any]:
     """Map pi ``--mode json`` NDJSON events into the generic harness schema."""
     events: list[dict[str, Any]] = []
@@ -664,6 +684,8 @@ class SubprocessBackend:
         try:
             decoded = json.loads(stdout)
         except (json.JSONDecodeError, ValueError):
+            return _parse_pi_json_events(stdout)
+        if isinstance(decoded, dict) and _is_pi_json_event(decoded):
             return _parse_pi_json_events(stdout)
         return decoded if isinstance(decoded, dict) else {}
 

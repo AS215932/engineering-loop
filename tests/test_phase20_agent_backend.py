@@ -154,6 +154,21 @@ def test_subprocess_backend_command_assembly_and_refusals(tmp_path: Path) -> Non
     assert "acceptEdits" not in read_only_command
 
 
+def test_pi_backend_parses_single_json_error_event() -> None:
+    stdout = json.dumps(
+        {
+            "type": "agent_error",
+            "error": {"message": "provider refused the request"},
+            "willRetry": False,
+        }
+    )
+
+    parsed = PiBackend()._parse_harness_output(stdout)
+
+    assert parsed["num_turns"] == 1
+    assert parsed["is_error"] is True
+
+
 def test_pi_backend_parses_json_event_usage_and_cost() -> None:
     stdout = "\n".join(
         json.dumps(event)

@@ -137,8 +137,6 @@ def prepare_gate_command(command: Sequence[str], *, cwd: Path | str | None = Non
     argv = list(command)
     cwd_path = Path(cwd).expanduser().resolve() if cwd is not None else None
     dev_args = _uv_dev_args(cwd_path)
-    if not dev_args:
-        return argv
 
     name = _path_name(argv[0]) if argv else ""
     if name == "uv" and len(argv) >= 2 and argv[1] == "run":
