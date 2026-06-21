@@ -11,7 +11,7 @@ from typing import Any, Iterable, Sequence
 
 MAX_OUTPUT_CHARS = 8_000
 PYTHON_GATE_TOOLS = frozenset({"pytest", "ruff", "mypy"})
-UV_DEV_SELECTORS = frozenset({"--group", "--extra", "--all-groups", "--all-extras"})
+UV_DEV_SELECTORS = frozenset({"--group", "--extra", "--only-group", "--only-dev", "--all-groups", "--all-extras"})
 UV_LOCK_GUARDS = frozenset({"--locked", "--frozen"})
 UV_OPTIONS_WITH_VALUE = frozenset(
     {
@@ -137,7 +137,12 @@ def _uv_run_has_required_dev_selector(argv: Sequence[str], dev_args: tuple[str, 
     options = _uv_run_option_args(argv)
     selector, value = dev_args
     if selector == "--group":
-        return "--all-groups" in options or value in _uv_option_value(options, "--group")
+        return (
+            "--all-groups" in options
+            or "--only-dev" in options
+            or value in _uv_option_value(options, "--group")
+            or value in _uv_option_value(options, "--only-group")
+        )
     if selector == "--extra":
         return "--all-extras" in options or value in _uv_option_value(options, "--extra")
     return False

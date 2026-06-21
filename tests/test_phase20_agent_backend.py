@@ -170,6 +170,32 @@ def test_pi_backend_parses_single_json_error_event() -> None:
     assert parsed["is_error"] is True
 
 
+def test_pi_backend_retry_bookkeeping_does_not_fail_later_success() -> None:
+    stdout = "\n".join(
+        json.dumps(event)
+        for event in [
+            {"type": "compaction_end", "willRetry": True},
+            {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "recovered"}],
+                    "stopReason": "stop",
+                    "usage": {"input": 20, "output": 3, "cost": {"total": 0.02}},
+                },
+            },
+            {"type": "turn_end", "message": {"role": "assistant", "content": []}},
+            {"type": "agent_end", "willRetry": False},
+        ]
+    )
+
+    parsed = PiBackend()._parse_harness_output(stdout)
+
+    assert parsed["is_error"] is False
+    assert parsed["result"] == "recovered"
+    assert parsed["total_cost_usd"] == 0.02
+
+
 def test_pi_backend_treats_assistant_error_stop_reason_as_error() -> None:
     stdout = "\n".join(
         json.dumps(event)

@@ -638,8 +638,6 @@ def _parse_pi_json_events(stdout: str) -> dict[str, Any]:
             parsed["num_turns"] = int(parsed.get("num_turns", 0)) + 1
         if event_type in {"error", "agent_error"} or event.get("error"):
             parsed["is_error"] = True
-        if event.get("willRetry") is True:
-            parsed["is_error"] = True
 
         message = event.get("message")
         if isinstance(message, dict) and message.get("role") == "assistant":
