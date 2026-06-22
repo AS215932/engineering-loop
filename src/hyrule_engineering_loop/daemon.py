@@ -29,6 +29,7 @@ from typing import Any, Callable, TypeAlias
 
 from hyrule_engineering_loop.feature import run_feature_intake
 from hyrule_engineering_loop.knowledge_context import KnowledgeContextConfig
+from hyrule_engineering_loop.lhp import LhpClientConfig, fetch_lhp_payload, parse_lhp_pointer, post_lhp_update, render_lhp_request
 from hyrule_engineering_loop.intake import (
     APPROVED_LABEL,
     GhClient,
@@ -105,6 +106,7 @@ class DaemonConfig:
     lock_max_age_seconds: int = DEFAULT_LOCK_MAX_AGE_SECONDS
     knowledge_context: KnowledgeContextConfig | None = None
     knowledge_learning_dir: str | None = None
+    lhp: LhpClientConfig | None = None
 
 
 @dataclass
@@ -417,17 +419,58 @@ def daemon_once(
         change_class, risk = classify_issue(item)
         change_id = _change_id_for(item)
         body = _issue_body(item, client=client)
+        lhp_config = config.lhp or LhpClientConfig.from_env()
+        lhp_pointer = parse_lhp_pointer(body)
+        lhp_payload: dict[str, Any] | None = None
+        if lhp_pointer is not None:
+            post_lhp_update(
+                lhp_pointer,
+                lhp_config,
+                update_type="accepted",
+                status="accepted",
+                summary=f"Engineering Loop accepted approved issue {item.repo}#{item.number}",
+            )
+            try:
+                lhp_payload = fetch_lhp_payload(lhp_pointer, lhp_config)
+            except Exception as exc:
+                post_lhp_update(
+                    lhp_pointer,
+                    lhp_config,
+                    update_type="blocked",
+                    status="blocked",
+                    summary=f"Could not fetch authoritative NOC LHP payload: {type(exc).__name__}: {exc}",
+                )
+                return _finish(
+                    DaemonReport(
+                        outcome="needs_triage",
+                        detail=f"LHP fetch failed: {type(exc).__name__}: {str(exc)[:160]}",
+                        issue={"repo": item.repo, "number": item.number, "title": item.title},
+                        change_id=change_id,
+                    ),
+                    discord_poster,
+                    icinga_poster,
+                )
+            post_lhp_update(
+                lhp_pointer,
+                lhp_config,
+                update_type="investigating",
+                status="in_progress",
+                summary="Engineering Loop fetched authoritative NOC LHP payload and is preparing a run",
+            )
 
         output_root = config.output_root.expanduser().resolve() / change_id.lower()
         output_root.mkdir(parents=True, exist_ok=True)
         request_path = output_root / "request.md"
-        request_path.write_text(
-            f"# {item.title}\n\n"
-            f"- source issue: {item.url}\n"
-            f"- labels: {', '.join(item.labels)}\n\n"
-            f"{body}\n",
-            encoding="utf-8",
-        )
+        if lhp_pointer is not None and lhp_payload is not None:
+            request_text = render_lhp_request(lhp_payload, issue_url=item.url, issue_body=body)
+        else:
+            request_text = (
+                f"# {item.title}\n\n"
+                f"- source issue: {item.url}\n"
+                f"- labels: {', '.join(item.labels)}\n\n"
+                f"{body}\n"
+            )
+        request_path.write_text(request_text, encoding="utf-8")
 
         runner = feature_runner or run_feature_intake
         repo_name = repo_name_for_issue(item)
@@ -487,11 +530,29 @@ def daemon_once(
             github = pr_results[0].get("github_pr", {}) if pr_results else {}
             report.pr_url = github.get("url") if isinstance(github, dict) else None
             report.detail = f"draft PR from {item.repo}#{item.number}"
+            if lhp_pointer is not None:
+                evidence = [{"type": "github_pr", "ref": report.pr_url, "summary": "Draft PR published"}] if report.pr_url else []
+                post_lhp_update(
+                    lhp_pointer,
+                    lhp_config,
+                    update_type="change_planned",
+                    status="change_planned",
+                    summary=report.detail,
+                    evidence=evidence,
+                )
         else:
             failure = result.get("failure_summary") or {}
             report.detail = str(
                 failure.get("error_excerpt", "run paused for operator triage")
             )[:200]
+            if lhp_pointer is not None:
+                post_lhp_update(
+                    lhp_pointer,
+                    lhp_config,
+                    update_type="needs_human",
+                    status="needs_human",
+                    summary=report.detail,
+                )
 
         report.wall_clock_seconds = time.monotonic() - started
         update_ledger(
