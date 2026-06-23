@@ -11,6 +11,7 @@ from typing import Any, cast
 from hyrule_engineering_loop.state import GraphState
 
 TRACE_FILENAME = "loop_trace.json"
+TRACE_OUTPUT_CHARS = 2_000
 
 
 def _resolve_trace_dir(state: GraphState) -> Path | None:
@@ -20,6 +21,13 @@ def _resolve_trace_dir(state: GraphState) -> Path | None:
     path = Path(raw_dir).expanduser().resolve()
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _trace_output_excerpt(value: Any) -> str:
+    text = str(value or "")
+    if len(text) <= TRACE_OUTPUT_CHARS:
+        return text
+    return text[:TRACE_OUTPUT_CHARS] + "\n[trace output truncated]"
 
 
 def _summarize_value(key: str, value: Any) -> Any:
@@ -66,9 +74,13 @@ def _summarize_value(key: str, value: Any) -> Any:
     if key in {"gate_results"} and isinstance(value, list):
         return [
             {
+                "repo": item.get("repo"),
                 "command": item.get("command"),
+                "executed_command": item.get("executed_command", item.get("command")),
                 "status": item.get("status"),
                 "returncode": item.get("returncode"),
+                "stdout": _trace_output_excerpt(item.get("stdout", "")),
+                "stderr": _trace_output_excerpt(item.get("stderr", "")),
             }
             for item in value
             if isinstance(item, dict)

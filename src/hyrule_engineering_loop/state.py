@@ -103,6 +103,7 @@ class GraphState(TypedDict):
     requires_human_signoff: bool
 
     gate_commands: NotRequired[List[List[str]]]
+    gate_commands_by_repo: NotRequired[Dict[str, List[List[str]]]]
     gate_results: NotRequired[Annotated[List[Dict[str, Any]], operator.add]]
     gate_status: NotRequired[GateStatus]
     prompt_artifacts: NotRequired[Annotated[Dict[str, str], merge_string_map]]

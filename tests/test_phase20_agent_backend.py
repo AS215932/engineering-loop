@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, cast
 
@@ -22,8 +23,9 @@ from hyrule_engineering_loop.backend import (
 from hyrule_engineering_loop.cli import main
 from hyrule_engineering_loop.feature import build_feature_state
 from hyrule_engineering_loop.graph import build_graph
+from hyrule_engineering_loop.nodes import delegate_implementation_node
 from hyrule_engineering_loop.model_policy import select_backend_for_state, validate_model_policy
-from hyrule_engineering_loop.promotion import rollback_promotions
+from hyrule_engineering_loop.promotion import rollback_promotions, setup_worktrees_for_state
 from hyrule_engineering_loop.state import GraphState
 
 
@@ -137,6 +139,11 @@ def test_subprocess_backend_command_assembly_and_refusals(tmp_path: Path) -> Non
     assert command[command.index("--max-turns") + 1] == "7"
     assert "CMD_ASSEMBLY" in command[command.index("-p") + 1]
 
+    pi_command = PiBackend().build_command(
+        prompt=assemble_backend_prompt(spec, constraints), constraints=constraints
+    )
+    assert pi_command[:4] == ["pi", "--print", "--mode", "json"]
+
     refused = PiBackend().execute(task_spec=spec, worktree=None, constraints=constraints)
     assert refused.status == "failed"
     assert "requires a branch-backed worktree" in str(refused.error)
@@ -146,6 +153,107 @@ def test_subprocess_backend_command_assembly_and_refusals(tmp_path: Path) -> Non
     )
     assert "plan" in read_only_command
     assert "acceptEdits" not in read_only_command
+
+
+def test_pi_backend_parses_single_json_error_event() -> None:
+    stdout = json.dumps(
+        {
+            "type": "agent_error",
+            "error": {"message": "provider refused the request"},
+            "willRetry": False,
+        }
+    )
+
+    parsed = PiBackend()._parse_harness_output(stdout)
+
+    assert parsed["num_turns"] == 1
+    assert parsed["is_error"] is True
+
+
+def test_pi_backend_retry_bookkeeping_does_not_fail_later_success() -> None:
+    stdout = "\n".join(
+        json.dumps(event)
+        for event in [
+            {"type": "compaction_end", "willRetry": True},
+            {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "recovered"}],
+                    "stopReason": "stop",
+                    "usage": {"input": 20, "output": 3, "cost": {"total": 0.02}},
+                },
+            },
+            {"type": "turn_end", "message": {"role": "assistant", "content": []}},
+            {"type": "agent_end", "willRetry": False},
+        ]
+    )
+
+    parsed = PiBackend()._parse_harness_output(stdout)
+
+    assert parsed["is_error"] is False
+    assert parsed["result"] == "recovered"
+    assert parsed["total_cost_usd"] == 0.02
+
+
+def test_pi_backend_treats_assistant_error_stop_reason_as_error() -> None:
+    stdout = "\n".join(
+        json.dumps(event)
+        for event in [
+            {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "provider failed"}],
+                    "stopReason": "error",
+                    "errorMessage": "upstream provider failed",
+                    "usage": {
+                        "input": 10,
+                        "output": 2,
+                        "cost": {"total": 0.01},
+                    },
+                },
+            },
+            {"type": "turn_end", "message": {"role": "assistant", "content": []}},
+        ]
+    )
+
+    parsed = PiBackend()._parse_harness_output(stdout)
+
+    assert parsed["is_error"] is True
+    assert parsed["result"] == "provider failed"
+    assert parsed["total_cost_usd"] == 0.01
+
+
+def test_pi_backend_parses_json_event_usage_and_cost() -> None:
+    stdout = "\n".join(
+        json.dumps(event)
+        for event in [
+            {"type": "agent_start"},
+            {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "draft complete"}],
+                    "usage": {
+                        "input": 1323,
+                        "output": 5,
+                        "cost": {"input": 0.006615, "output": 0.00015, "total": 0.006765},
+                    },
+                },
+            },
+            {"type": "turn_end", "message": {"role": "assistant", "content": []}},
+            {"type": "agent_end", "willRetry": False},
+        ]
+    )
+
+    parsed = PiBackend()._parse_harness_output(stdout)
+
+    assert parsed["num_turns"] == 1
+    assert parsed["usage"] == {"input_tokens": 1323, "output_tokens": 5}
+    assert parsed["total_cost_usd"] == 0.006765
+    assert parsed["result"] == "draft complete"
+    assert parsed["is_error"] is False
 
 
 def test_backend_selection_follows_tier_escalation(tmp_path: Path) -> None:
@@ -209,6 +317,35 @@ def test_backend_selection_follows_tier_escalation(tmp_path: Path) -> None:
     result = validate_model_policy(bad_policy)
     assert result["ok"] is False
     assert any("unknown default backend" in error for error in result["errors"])
+
+
+def test_subprocess_backend_enforces_reported_cost_budget(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    backend = ClaudeCodeBackend(
+        command=[
+            sys.executable,
+            "-c",
+            "import json; print(json.dumps({'num_turns': 2, 'total_cost_usd': 2.5, 'usage': {'input_tokens': 10, 'output_tokens': 20}, 'result': 'done'}))",
+        ]
+    )
+    spec = TaskSpec(
+        change_id="COST_BUDGET",
+        change_class="app_feature",
+        risk_level="low",
+        request="exercise cost budget",
+        allowed_paths={"repo": ("docs",)},
+    )
+
+    result = backend.execute(
+        task_spec=spec,
+        worktree=repo,
+        constraints=BackendConstraints(max_cost_usd=1.0),
+    )
+
+    assert result.status == "budget_exhausted"
+    assert result.cost.usd == 2.5
+    assert "exceeded run budget" in result.notes
 
 
 def test_budget_exhaustion_routes_to_human_signoff(tmp_path: Path) -> None:
@@ -326,6 +463,78 @@ def test_policy_guard_enforces_changed_file_cap(tmp_path: Path) -> None:
     )
 
     rollback_promotions(final_state["worktree_results"])
+
+
+def test_auto_gate_selection_is_per_worktree(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    _init_repo(workspace_root / "docs-repo")
+    _init_repo(workspace_root / "python-repo")
+    (workspace_root / "python-repo" / "pyproject.toml").write_text(
+        "[dependency-groups]\ndev = ['pytest', 'ruff', 'mypy']\n",
+        encoding="utf-8",
+    )
+    (workspace_root / "python-repo" / "python_repo").mkdir()
+    (workspace_root / "python-repo" / "python_repo" / "__init__.py").write_text("", encoding="utf-8")
+    _run(["git", "add", "pyproject.toml", "python_repo/__init__.py"], workspace_root / "python-repo")
+    _run(["git", "commit", "-m", "add python project"], workspace_root / "python-repo")
+
+    state = cast(
+        GraphState,
+        {
+            "change_id": "MULTI_REPO_GATES",
+            "change_class": "app_feature",
+            "risk_level": "low",
+            "customer_impact": "none",
+            "source_of_truth_files": [],
+            "proposed_mutations": {},
+            "mcp_schema_breaking": False,
+            "emulated_lab_verified": "not_applicable",
+            "validation_errors": [],
+            "role_approvals": {},
+            "retry_counters": {},
+            "rollback_plan": "",
+            "noc_handoff_metadata": {},
+            "requires_human_signoff": False,
+            "promotion_enabled": True,
+            "promotion_repositories": {
+                "docs-repo": str(workspace_root / "docs-repo"),
+                "python-repo": str(workspace_root / "python-repo"),
+            },
+            "promotion_allowed_paths": {
+                "docs-repo": ["docs"],
+                "python-repo": ["python_repo"],
+            },
+            "promotion_worktree_root": str(tmp_path / "worktrees"),
+            "promotion_branch_prefix": "hyrule-feature",
+            "feature_request": "exercise per-worktree gate selection",
+            "llm_mock_responses": {
+                "implementation_writer": {
+                    "approved": True,
+                    "proposed_mutations": [
+                        {
+                            "path": "python-repo:python_repo/change.py",
+                            "content": "VALUE = 1\n",
+                            "operation": "create",
+                        }
+                    ],
+                }
+            },
+        },
+    )
+    worktrees = setup_worktrees_for_state(state)
+    state["worktree_results"] = worktrees
+
+    update = delegate_implementation_node(state)
+
+    assert "gate_commands" not in update
+    assert update["gate_commands_by_repo"] == {
+        "python-repo": [
+            ["uv", "run", "python", "-m", "pytest", "-q", "-p", "no:cacheprovider"],
+            ["uv", "run", "ruff", "check", "--no-cache", "."],
+            ["uv", "run", "mypy", "--no-incremental", "python_repo"],
+        ]
+    }
+    rollback_promotions(worktrees)
 
 
 def test_backend_canary_dry_live_assembles_without_execution(

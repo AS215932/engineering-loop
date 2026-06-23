@@ -105,7 +105,9 @@ The daemon's default production scope is the eight core repos:
 `engineering-loop`, `network-operations`, `hyrule-cloud`, `hyrule-web`,
 `hyrule-mcp`, `noc-agent`, `hyrule-network-proxy`, and `as215932.net`. It runs low-and-slow by
 default: at most 2 runs/day, $10/day, and docs-only mutation boundaries unless
-a later reviewed PR widens them.
+a later reviewed PR widens them. Feature-sized approved issues can opt into a
+larger per-run cap with `loop:budget-large` or `loop:budget-xl`; daily caps
+still apply.
 
 The dedicated `loop` VM sets `HYRULE_MODEL_POLICY_FILE` to
 `configs/loop/model-policy.production.yml` after the operator completes Pi auth;

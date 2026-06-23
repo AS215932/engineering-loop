@@ -11,6 +11,7 @@ from typing import Any
 
 import yaml
 
+from hyrule_engineering_loop.gate_runner import gate_command_preparation_error, prepare_gate_command
 from hyrule_engineering_loop.state import GraphState
 from hyrule_engineering_loop.workspace import _safe_relative_path
 
@@ -253,13 +254,53 @@ def _validate_gate_commands(state: GraphState, policy: dict[str, Any]) -> list[s
         return []
 
     violations: list[str] = []
-    for command in state.get("gate_commands", []):
+
+    def check(command: list[str], *, prefix: str = "gate command") -> None:
         if not command:
-            violations.append("gate command cannot be empty")
-            continue
+            violations.append(f"{prefix} cannot be empty")
+            return
         name = Path(command[0]).name
         if name not in allowed:
-            violations.append(f"gate command not allowlisted: {name}")
+            violations.append(f"{prefix} not allowlisted: {name}")
+
+    def check_prepared(
+        command: list[str],
+        *,
+        cwd: str | None,
+        prefix: str = "prepared gate command",
+    ) -> None:
+        if not command:
+            return
+        preparation_error = gate_command_preparation_error(command, cwd=cwd)
+        if preparation_error:
+            violations.append(preparation_error)
+        prepared = prepare_gate_command(command, cwd=cwd)
+        if prepared == command:
+            return
+        check(prepared, prefix=prefix)
+
+    worktree_cwds = [
+        str(worktree.get("worktree_path"))
+        for worktree in state.get("worktree_results") or []
+        if worktree.get("worktree_path")
+    ]
+    workspace_cwd = state.get("workspace_root")
+    global_cwds: list[str | None] = list(worktree_cwds) if worktree_cwds else [workspace_cwd]
+    cwd_by_repo = {
+        str(worktree.get("repo", "")): str(worktree.get("worktree_path"))
+        for worktree in state.get("worktree_results") or []
+        if worktree.get("repo") and worktree.get("worktree_path")
+    }
+
+    for command in state.get("gate_commands", []):
+        check(command)
+        for cwd in global_cwds:
+            check_prepared(command, cwd=cwd)
+    for repo, commands in state.get("gate_commands_by_repo", {}).items():
+        cwd = cwd_by_repo.get(repo, workspace_cwd)
+        for command in commands:
+            check(command, prefix=f"gate command for {repo}")
+            check_prepared(command, cwd=cwd, prefix=f"prepared gate command for {repo}")
     return violations
 
 

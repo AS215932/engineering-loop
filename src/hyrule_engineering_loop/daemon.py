@@ -78,6 +78,22 @@ LABEL_CHANGE_CLASSES: dict[str, ChangeClass] = {
 }
 HIGH_RISK_LABELS = frozenset({"critical", "security"})
 
+ISSUE_BUDGET_LABELS: dict[str, dict[str, float | int]] = {
+    # Explicit human triage signal for feature-class work that is too large for
+    # the low-and-slow timer default. These raise only the per-run cap; daily
+    # run/cost caps still apply.
+    "loop:budget-large": {
+        "max_iterations": 40,
+        "max_wall_clock_minutes": 90,
+        "max_cost_usd": 7.5,
+    },
+    "loop:budget-xl": {
+        "max_iterations": 60,
+        "max_wall_clock_minutes": 120,
+        "max_cost_usd": 10.0,
+    },
+}
+
 
 class DaemonError(RuntimeError):
     """Raised when a daemon cycle cannot run at all."""
@@ -331,6 +347,32 @@ def repo_name_for_issue(item: IntakeItem) -> str:
     return REPO_CHECKOUT_NAMES.get(short, short)
 
 
+def backend_budget_for_issue(
+    item: IntakeItem,
+    config: DaemonConfig,
+    *,
+    remaining_cost_usd: float | None = None,
+) -> dict[str, float | int]:
+    """Resolve per-run backend budget, optionally raised by issue label."""
+    budget: dict[str, float | int] = {
+        "max_iterations": config.max_iterations_per_run,
+        "max_wall_clock_minutes": config.max_wall_clock_minutes_per_run,
+        "max_cost_usd": config.max_cost_usd_per_run,
+    }
+    normalized_labels = {label.lower() for label in item.labels}
+    for label, override in ISSUE_BUDGET_LABELS.items():
+        if label not in normalized_labels:
+            continue
+        budget["max_iterations"] = max(int(budget["max_iterations"]), int(override["max_iterations"]))
+        budget["max_wall_clock_minutes"] = max(
+            int(budget["max_wall_clock_minutes"]), int(override["max_wall_clock_minutes"])
+        )
+        budget["max_cost_usd"] = max(float(budget["max_cost_usd"]), float(override["max_cost_usd"]))
+    if remaining_cost_usd is not None:
+        budget["max_cost_usd"] = max(0.0, min(float(budget["max_cost_usd"]), remaining_cost_usd))
+    return budget
+
+
 def _issue_body(item: IntakeItem, *, client: GhClient) -> str:
     raw = client.run(
         ["issue", "view", str(item.number), "--repo", item.repo, "--json", "body"]
@@ -418,6 +460,16 @@ def daemon_once(
         item = queue[0]
         change_class, risk = classify_issue(item)
         change_id = _change_id_for(item)
+        remaining_cost_usd = config.max_cost_usd_per_day - float(ledger.get("cost_usd", 0.0))
+        if remaining_cost_usd <= 0:
+            return _finish(
+                DaemonReport(
+                    outcome="over_budget",
+                    detail=f"daily cost budget reached (${config.max_cost_usd_per_day:.2f})",
+                ),
+                discord_poster,
+                icinga_poster,
+            )
         body = _issue_body(item, client=client)
         lhp_config = config.lhp or LhpClientConfig.from_env()
         lhp_pointer = parse_lhp_pointer(body)
@@ -475,6 +527,11 @@ def daemon_once(
         runner = feature_runner or run_feature_intake
         repo_name = repo_name_for_issue(item)
         effective_allowed_paths = list(config.allowed_paths_by_repo.get(repo_name, config.allowed_paths))
+        effective_backend_budget = backend_budget_for_issue(
+            item,
+            config,
+            remaining_cost_usd=remaining_cost_usd,
+        )
         result = runner(
             change_id=change_id,
             change_class=change_class,
@@ -485,11 +542,7 @@ def daemon_once(
             allowed_paths=effective_allowed_paths,
             source_files=["README.md"],
             memory_dir=config.memory_dir,
-            backend_budget={
-                "max_iterations": config.max_iterations_per_run,
-                "max_wall_clock_minutes": config.max_wall_clock_minutes_per_run,
-                "max_cost_usd": config.max_cost_usd_per_run,
-            },
+            backend_budget=effective_backend_budget,
             knowledge_context=config.knowledge_context,
             knowledge_learning_dir=config.knowledge_learning_dir,
         )
@@ -505,7 +558,11 @@ def daemon_once(
             journal_path=(final_state.get("reflection_results") or {}).get("journal_path"),
         )
 
-        if result.get("signoff_status") == "ready_for_review" and final_state.get(
+        run_cost_budget = float(effective_backend_budget.get("max_cost_usd", 0.0))
+        cost_budget_exceeded = run_cost_budget > 0 and cost > run_cost_budget
+        if cost_budget_exceeded:
+            report.detail = f"reported run cost ${cost:.4f} exceeded budget ${run_cost_budget:.4f}"
+        elif result.get("signoff_status") == "ready_for_review" and final_state.get(
             "promotion_results"
         ):
             # The human pre-authorized this work by applying loop:approved;

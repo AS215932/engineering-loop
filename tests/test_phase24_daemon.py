@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -14,6 +15,7 @@ from hyrule_engineering_loop.daemon import (
     DaemonConfig,
     DaemonReport,
     acquire_lock,
+    backend_budget_for_issue,
     classify_issue,
     daemon_once,
     notify_discord,
@@ -220,6 +222,40 @@ def test_daemon_defaults_to_core_repos_and_low_and_slow_budget() -> None:
     assert config.allowed_paths_by_repo == {}
 
 
+def test_loop_budget_label_raises_only_the_per_issue_run_budget() -> None:
+    item = IntakeItem(
+        repo="AS215932/hyrule-cloud",
+        number=12,
+        title="Feature-sized work",
+        url="u",
+        labels=("loop:approved", "loop:budget-xl"),
+        updated_at="",
+        score=0.0,
+        body_complete=True,
+    )
+
+    budget = backend_budget_for_issue(item, DaemonConfig())
+
+    assert budget == {"max_iterations": 60, "max_wall_clock_minutes": 120, "max_cost_usd": 10.0}
+
+
+def test_loop_budget_label_is_clamped_to_remaining_daily_cost() -> None:
+    item = IntakeItem(
+        repo="AS215932/hyrule-cloud",
+        number=12,
+        title="Feature-sized work",
+        url="u",
+        labels=("loop:approved", "loop:budget-xl"),
+        updated_at="",
+        score=0.0,
+        body_complete=True,
+    )
+
+    budget = backend_budget_for_issue(item, DaemonConfig(), remaining_cost_usd=4.25)
+
+    assert budget == {"max_iterations": 60, "max_wall_clock_minutes": 120, "max_cost_usd": 4.25}
+
+
 def _capture_allowed_paths(tmp_path: Path, config_kwargs: dict[str, Any], repo: str = "AS215932/hyrule-cloud") -> dict[str, Any]:
     captured: dict[str, Any] = {}
 
@@ -254,6 +290,98 @@ def test_daemon_allowed_paths_unlisted_repo_falls_back_to_docs(tmp_path: Path) -
         repo="AS215932/hyrule-cloud",
     )
     assert captured["allowed_paths"] == ["docs"]
+
+
+def test_daemon_passes_issue_budget_override_to_feature_runner(tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+
+    def runner(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"final_state": {}, "state_path": str(tmp_path / "state.json")}
+
+    repo = "AS215932/hyrule-cloud"
+    config = DaemonConfig(repos=(repo,), state_dir=tmp_path / "state", output_root=tmp_path / "runs")
+    gh = FakeGh(
+        {
+            "issue list": _approved_issue_json(12, repo=repo, labels=["loop:approved", "loop:budget-xl"]),
+            "issue view": json.dumps({"body": "x"}),
+        }
+    )
+
+    daemon_once(config, client=gh, feature_runner=runner)
+
+    assert captured["backend_budget"] == {
+        "max_iterations": 60,
+        "max_wall_clock_minutes": 120,
+        "max_cost_usd": 10.0,
+    }
+
+
+def test_daemon_blocks_publication_when_reported_cost_exceeds_run_budget(tmp_path: Path) -> None:
+    def runner(**kwargs: Any) -> dict[str, Any]:
+        return {
+            "state_path": str(kwargs["output_root"] / "state" / f"{kwargs['change_id']}.json"),
+            "signoff_status": "ready_for_review",
+            "final_state": {
+                "promotion_results": [{"repo": "hyrule-cloud", "branch": "b", "worktree_path": "w"}],
+                "noc_handoff_path": "h",
+                "backend_results": [{"cost": {"usd": 6.0}}],
+                "reflection_results": {"written": True},
+            },
+        }
+
+    published: list[dict[str, Any]] = []
+    repo = "AS215932/hyrule-cloud"
+    config = DaemonConfig(repos=(repo,), state_dir=tmp_path / "state", output_root=tmp_path / "runs")
+    gh = FakeGh(
+        {
+            "issue list": _approved_issue_json(13, repo=repo, labels=["loop:approved"]),
+            "issue view": json.dumps({"body": "x"}),
+        }
+    )
+
+    report = daemon_once(
+        config,
+        client=gh,
+        feature_runner=runner,
+        publisher=lambda state, **kwargs: published.append(state) or [],
+    )
+
+    assert report.outcome == "needs_triage"
+    assert "exceeded budget" in report.detail
+    assert published == []
+
+
+def test_daemon_clamps_issue_budget_to_remaining_daily_cost(tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+
+    def runner(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"final_state": {}, "state_path": str(tmp_path / "state.json")}
+
+    repo = "AS215932/hyrule-cloud"
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    day = datetime.now(UTC).strftime("%Y-%m-%d")
+    (state_dir / f"ledger-{day}.json").write_text(
+        json.dumps({"runs": 1, "cost_usd": 6.0, "wall_clock_seconds": 10.0}),
+        encoding="utf-8",
+    )
+    config = DaemonConfig(repos=(repo,), state_dir=state_dir, output_root=tmp_path / "runs")
+    gh = FakeGh(
+        {
+            "issue list": _approved_issue_json(12, repo=repo, labels=["loop:approved", "loop:budget-xl"]),
+            "issue view": json.dumps({"body": "x"}),
+        }
+    )
+
+    daemon_once(config, client=gh, feature_runner=runner)
+
+    assert captured["backend_budget"] == {
+        "max_iterations": 60,
+        "max_wall_clock_minutes": 120,
+        "max_cost_usd": 4.0,
+    }
 
 
 def test_repo_name_for_issue_maps_core_repo_checkout_names() -> None:

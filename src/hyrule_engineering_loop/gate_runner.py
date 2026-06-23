@@ -5,10 +5,61 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 MAX_OUTPUT_CHARS = 8_000
+PYTHON_GATE_TOOLS = frozenset({"pytest", "ruff", "mypy"})
+UV_DEV_SELECTORS = frozenset({"--group", "--extra", "--only-group", "--only-dev", "--all-groups", "--all-extras"})
+UV_LOCK_GUARDS = frozenset({"--locked", "--frozen"})
+UV_OPTIONS_WITH_VALUE = frozenset(
+    {
+        "--allow-insecure-host",
+        "--cache-dir",
+        "--color",
+        "--config-file",
+        "--config-setting",
+        "--config-settings-package",
+        "--default-index",
+        "--directory",
+        "--env-file",
+        "--exclude-newer",
+        "--exclude-newer-package",
+        "--extra",
+        "--extra-index-url",
+        "--find-links",
+        "--fork-strategy",
+        "--group",
+        "--index",
+        "--index-strategy",
+        "--index-url",
+        "--keyring-provider",
+        "--link-mode",
+        "--no-binary-package",
+        "--no-build-isolation-package",
+        "--no-build-package",
+        "--no-editable-package",
+        "--no-extra",
+        "--no-group",
+        "--no-sources-package",
+        "--only-group",
+        "--package",
+        "--prerelease",
+        "--project",
+        "--python",
+        "--python-platform",
+        "--refresh-package",
+        "--reinstall-package",
+        "--resolution",
+        "--upgrade-group",
+        "--upgrade-package",
+        "--with",
+        "--with-editable",
+        "--with-requirements",
+    }
+)
+UV_SHORT_OPTIONS_WITH_VALUE = frozenset({"-C", "-P", "-f", "-i", "-p", "-w"})
 
 
 def _clip(text: str) -> str:
@@ -23,6 +74,193 @@ def _as_text(value: bytes | str | None) -> str:
     if isinstance(value, bytes):
         return value.decode(errors="replace")
     return value
+
+
+def _path_name(value: str) -> str:
+    return Path(value).name
+
+
+def _is_python_executable(value: str) -> bool:
+    name = _path_name(value)
+    return name == "python" or name.startswith("python3")
+
+
+def _is_python_gate_payload(argv: Sequence[str]) -> bool:
+    if not argv:
+        return False
+    name = _path_name(argv[0])
+    if name in PYTHON_GATE_TOOLS:
+        return True
+    return _is_python_executable(name) and len(argv) >= 3 and argv[1] == "-m" and argv[2] in PYTHON_GATE_TOOLS
+
+
+def _uv_run_option_args(argv: Sequence[str]) -> list[str]:
+    if len(argv) < 2 or _path_name(argv[0]) != "uv" or argv[1] != "run":
+        return []
+    options: list[str] = []
+    index = 2
+    while index < len(argv) and argv[index].startswith("-"):
+        option = argv[index]
+        if option == "--":
+            break
+        options.append(option)
+        if "=" in option:
+            index += 1
+        elif option in UV_OPTIONS_WITH_VALUE or option in UV_SHORT_OPTIONS_WITH_VALUE:
+            if index + 1 < len(argv):
+                options.append(argv[index + 1])
+            index += 2
+        else:
+            index += 1
+    return options
+
+
+def _uv_option_value(options: Sequence[str], name: str) -> list[str]:
+    values: list[str] = []
+    index = 0
+    while index < len(options):
+        option = options[index]
+        if option == name and index + 1 < len(options):
+            values.append(options[index + 1])
+            index += 2
+            continue
+        prefix = f"{name}="
+        if option.startswith(prefix):
+            values.append(option[len(prefix) :])
+        index += 1
+    return values
+
+
+def _uv_run_excludes_required_dev_selector(argv: Sequence[str], dev_args: tuple[str, str] | tuple[()]) -> bool:
+    if not dev_args:
+        return False
+    options = _uv_run_option_args(argv)
+    selector, value = dev_args
+    if selector == "--group":
+        return "--no-dev" in options or value in _uv_option_value(options, "--no-group")
+    if selector == "--extra":
+        return value in _uv_option_value(options, "--no-extra")
+    return False
+
+
+def _uv_run_has_required_dev_selector(argv: Sequence[str], dev_args: tuple[str, str] | tuple[()]) -> bool:
+    if not dev_args:
+        return True
+    if _uv_run_excludes_required_dev_selector(argv, dev_args):
+        return False
+    options = _uv_run_option_args(argv)
+    selector, value = dev_args
+    if selector == "--group":
+        return (
+            "--all-groups" in options
+            or "--only-dev" in options
+            or value in _uv_option_value(options, "--group")
+            or value in _uv_option_value(options, "--only-group")
+        )
+    if selector == "--extra":
+        return "--all-extras" in options or value in _uv_option_value(options, "--extra")
+    return False
+
+
+def gate_command_preparation_error(command: Sequence[str], *, cwd: Path | str | None = None) -> str | None:
+    """Return a fail-closed preparation error before executing a gate."""
+    argv = list(command)
+    if len(argv) < 2 or _path_name(argv[0]) != "uv" or argv[1] != "run":
+        return None
+    cwd_path = Path(cwd).expanduser().resolve() if cwd is not None else None
+    dev_args = _uv_dev_args(cwd_path)
+    if not dev_args:
+        return None
+    if not _is_python_gate_payload(_uv_run_payload(argv[2:])):
+        return None
+    if _uv_run_excludes_required_dev_selector(argv, dev_args):
+        selector, value = dev_args
+        return f"uv gate excludes required dev dependencies ({selector} {value})"
+    return None
+
+
+def _uv_run_has_lock_guard(argv: Sequence[str]) -> bool:
+    return any(arg in UV_LOCK_GUARDS for arg in _uv_run_option_args(argv))
+
+
+def _with_uv_lock_guard(argv: Sequence[str]) -> list[str]:
+    rendered = list(argv)
+    if len(rendered) >= 2 and _path_name(rendered[0]) == "uv" and rendered[1] == "run" and not _uv_run_has_lock_guard(rendered):
+        return [rendered[0], rendered[1], "--locked", *rendered[2:]]
+    return rendered
+
+
+def _uv_run_payload(argv_after_run: Sequence[str]) -> list[str]:
+    index = 0
+    argv = list(argv_after_run)
+    while index < len(argv) and argv[index].startswith("-"):
+        option = argv[index]
+        if option == "--":
+            return argv[index + 1 :]
+        if option in UV_LOCK_GUARDS:
+            index += 1
+        elif "=" in option:
+            index += 1
+        elif option in UV_OPTIONS_WITH_VALUE or option in UV_SHORT_OPTIONS_WITH_VALUE:
+            index += 2
+        else:
+            index += 1
+    return argv[index:]
+
+
+def _uv_dev_args(cwd: Path | None) -> tuple[str, str] | tuple[()]:
+    if cwd is None:
+        return ()
+    pyproject = cwd / "pyproject.toml"
+    if not pyproject.is_file():
+        return ()
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return ()
+
+    dependency_groups = data.get("dependency-groups")
+    if isinstance(dependency_groups, dict) and "dev" in dependency_groups:
+        return ("--group", "dev")
+
+    project = data.get("project")
+    optional_dependencies = (
+        project.get("optional-dependencies") if isinstance(project, dict) else None
+    )
+    if isinstance(optional_dependencies, dict) and "dev" in optional_dependencies:
+        return ("--extra", "dev")
+    return ()
+
+
+def prepare_gate_command(command: Sequence[str], *, cwd: Path | str | None = None) -> list[str]:
+    """Return the argv to execute, adding the target repo's dev env when needed.
+
+    Python quality gates in AS215932 repos commonly live in a ``dev``
+    dependency group or optional extra. Running ``ruff``/``mypy``/``pytest``
+    bare can silently test the loop host instead of the target repo. When the
+    worktree declares a dev dependency set, execute those gates via ``uv run``
+    with the matching selector.
+    """
+    argv = list(command)
+    cwd_path = Path(cwd).expanduser().resolve() if cwd is not None else None
+    dev_args = _uv_dev_args(cwd_path)
+
+    name = _path_name(argv[0]) if argv else ""
+    if name == "uv" and len(argv) >= 2 and argv[1] == "run":
+        locked = _with_uv_lock_guard(argv)
+        if not dev_args:
+            return locked
+        if _uv_run_has_required_dev_selector(locked, dev_args):
+            return locked
+        if _is_python_gate_payload(_uv_run_payload(locked[2:])):
+            return _with_uv_lock_guard([*argv[:2], *dev_args, *argv[2:]])
+        return locked
+
+    if not dev_args:
+        return argv
+    if _is_python_gate_payload(argv):
+        return ["uv", "run", "--locked", *dev_args, *argv]
+    return argv
 
 
 def run_gate_commands(
@@ -44,10 +282,35 @@ def run_gate_commands(
         argv = list(command)
         if not argv:
             raise ValueError("gate command cannot be empty")
+        prepared = prepare_gate_command(argv, cwd=cwd)
+        preparation_error = gate_command_preparation_error(argv, cwd=cwd)
+        if preparation_error:
+            result = {
+                "command": argv,
+                "executed_command": prepared,
+                "returncode": 126,
+                "status": "failed",
+                "stdout": "",
+                "stderr": _clip(preparation_error),
+            }
+            results.append(result)
+            errors.append(
+                {
+                    "node": "gate_execution",
+                    "domain": "ci",
+                    "message": preparation_error,
+                    "command": argv,
+                    "executed_command": prepared,
+                    "returncode": result["returncode"],
+                    "stdout": "",
+                    "stderr": result["stderr"],
+                }
+            )
+            continue
 
         try:
             completed = subprocess.run(
-                argv,
+                prepared,
                 cwd=cwd,
                 capture_output=True,
                 check=False,
@@ -56,39 +319,99 @@ def run_gate_commands(
             )
             result = {
                 "command": argv,
+                "executed_command": prepared,
                 "returncode": completed.returncode,
+                "status": "passed" if completed.returncode == 0 else "failed",
                 "stdout": _clip(completed.stdout),
                 "stderr": _clip(completed.stderr),
+            }
+        except FileNotFoundError as exc:
+            result = {
+                "command": argv,
+                "executed_command": prepared,
+                "returncode": 127,
+                "status": "failed",
+                "stdout": "",
+                "stderr": _clip(f"command not found: {prepared[0]} ({exc})"),
+            }
+        except PermissionError as exc:
+            result = {
+                "command": argv,
+                "executed_command": prepared,
+                "returncode": 126,
+                "status": "failed",
+                "stdout": "",
+                "stderr": _clip(f"command is not executable: {prepared[0]} ({exc})"),
+            }
+        except OSError as exc:
+            result = {
+                "command": argv,
+                "executed_command": prepared,
+                "returncode": 126,
+                "status": "failed",
+                "stdout": "",
+                "stderr": _clip(f"command could not start: {' '.join(prepared)} ({exc})"),
             }
         except subprocess.TimeoutExpired as exc:
             result = {
                 "command": argv,
+                "executed_command": prepared,
                 "returncode": 124,
+                "status": "failed",
                 "stdout": _clip(_as_text(exc.stdout)),
                 "stderr": _clip(_as_text(exc.stderr) or f"timed out after {timeout_seconds}s"),
             }
 
         results.append(result)
         if result["returncode"] != 0:
+            stderr = str(result.get("stderr", ""))
+            stdout = str(result.get("stdout", ""))
             errors.append(
                 {
                     "node": "gate_execution",
                     "domain": "ci",
-                    "message": f"command failed: {' '.join(argv)}",
+                    "message": f"command failed: {' '.join(prepared)}",
+                    "command": argv,
+                    "executed_command": prepared,
                     "returncode": result["returncode"],
-                    "stderr": result["stderr"],
+                    "stdout": stdout,
+                    "stderr": stderr,
                 }
             )
 
     return results, errors
 
 
-def select_gate_commands_for_mutations(paths: Iterable[str]) -> list[list[str]]:
+def _mypy_targets(paths: Sequence[str]) -> list[str]:
+    top_level = sorted(
+        {
+            path.split("/", 1)[0]
+            for path in paths
+            if path.endswith(".py") and "/" in path and path.split("/", 1)[0] not in {"tests", "test"}
+        }
+    )
+    if len(top_level) == 1:
+        return [top_level[0]]
+    return ["."]
+
+
+def select_gate_commands_for_mutations(
+    paths: Iterable[str],
+    *,
+    cwd: Path | str | None = None,
+) -> list[list[str]]:
     """Select local, workspace-safe gates from proposed mutation paths."""
     normalized = [path.split(":", 1)[1] if ":" in path else path for path in paths]
     if not normalized:
         return []
     if any(path.endswith(".py") for path in normalized):
+        cwd_path = Path(cwd).expanduser().resolve() if cwd is not None else None
+        if _uv_dev_args(cwd_path):
+            return [
+                ["uv", "run", "python", "-m", "pytest", "-q", "-p", "no:cacheprovider"],
+                ["uv", "run", "ruff", "check", "--no-cache", "."],
+                ["uv", "run", "mypy", "--no-incremental", *_mypy_targets(normalized)],
+            ]
         return [[sys.executable, "-m", "compileall", "-q", "."]]
     if all(path.startswith("docs/") or path.endswith((".md", ".txt", ".rst")) for path in normalized):
         paths_literal = repr(json.dumps(normalized))

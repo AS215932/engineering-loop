@@ -35,8 +35,10 @@ from hyrule_engineering_loop.model_policy import (
     select_model_for_role,
 )
 from hyrule_engineering_loop.task_spec import (
+    DEFAULT_ACCEPTANCE_CRITERIA,
     DEFAULT_BUDGET,
     TaskSpecError,
+    extract_acceptance_criteria_from_markdown,
     parse_task_spec_text,
     render_task_spec,
     write_task_spec,
@@ -320,6 +322,9 @@ def planner_node(state: GraphState) -> StateUpdate:
             (line.strip() for line in request.splitlines() if line.strip()),
             "(no request text supplied)",
         )[:300]
+        acceptance_criteria = extract_acceptance_criteria_from_markdown(request) or list(
+            DEFAULT_ACCEPTANCE_CRITERIA
+        )
         spec = {
             "change_id": state["change_id"],
             "change_class": str(state["change_class"]),
@@ -335,11 +340,7 @@ def planner_node(state: GraphState) -> StateUpdate:
             "budget": dict(state.get("backend_budget") or DEFAULT_BUDGET),
             "intake_source": "operator",
             "intent": intent,
-            "acceptance_criteria": [
-                "The request is implemented within the allowed paths of each target repo.",
-                "All selected gates pass in the branch-backed worktree.",
-                "The diff introduces no secret material or denied content patterns.",
-            ],
+            "acceptance_criteria": acceptance_criteria,
             "non_goals": "Anything outside the allowed paths; unrelated refactors.",
             "rollback_sketch": state.get("rollback_plan")
             or "Discard the generated worktree and branch; no production state changes.",
@@ -532,6 +533,56 @@ def _mutation_operations_from_writer(review: RoleReviewOutput, *, source: str) -
         }
         for mutation in review.proposed_mutations
     ]
+
+
+def _mutation_paths_for_repo(mutations: dict[str, str], repo: str) -> list[str]:
+    paths: list[str] = []
+    for raw_path in mutations:
+        if ":" not in raw_path:
+            continue
+        mutation_repo, path = raw_path.split(":", 1)
+        if mutation_repo == repo:
+            paths.append(path)
+    return sorted(paths)
+
+
+def _select_gate_commands_by_repo(
+    state: GraphState,
+    *,
+    backend_runs: list[dict[str, Any]],
+    mutations: dict[str, str],
+) -> dict[str, list[list[str]]]:
+    """Select auto gates independently for each branch-backed worktree."""
+    selected: dict[str, list[list[str]]] = {}
+    for worktree in state.get("worktree_results") or []:
+        repo = str(worktree.get("repo", ""))
+        if not repo:
+            continue
+        paths: list[str] = []
+        for run in backend_runs:
+            if str(run.get("repo", "")) == repo:
+                paths.extend(str(path) for path in run.get("changed_paths", []))
+        if not paths:
+            paths = _mutation_paths_for_repo(mutations, repo)
+        if not paths:
+            continue
+        worktree_path = worktree.get("worktree_path")
+        commands = select_gate_commands_for_mutations(
+            paths,
+            cwd=str(worktree_path) if worktree_path else None,
+        )
+        if commands:
+            selected[repo] = commands
+    return selected
+
+
+def _tag_gate_entries(
+    entries: list[dict[str, Any]],
+    *,
+    repo: str | None,
+    cwd: str | None,
+) -> list[dict[str, Any]]:
+    return [{**entry, "repo": repo, "cwd": cwd} for entry in entries]
 
 
 def worktree_setup_node(state: GraphState) -> StateUpdate:
@@ -789,10 +840,23 @@ def delegate_implementation_node(state: GraphState) -> StateUpdate:
         update["retry_counters"] = _increment_counter(
             state["retry_counters"], retry_key or "backend"
         )
-    if not state.get("gate_commands") and (changed_paths or mutations):
-        update["gate_commands"] = select_gate_commands_for_mutations(
-            changed_paths or list(mutations)
+    if (
+        not state.get("gate_commands")
+        and not state.get("gate_commands_by_repo")
+        and (changed_paths or mutations)
+    ):
+        per_repo = _select_gate_commands_by_repo(
+            state,
+            backend_runs=backend_runs,
+            mutations=mutations,
         )
+        if per_repo:
+            update["gate_commands_by_repo"] = per_repo
+        else:
+            update["gate_commands"] = select_gate_commands_for_mutations(
+                changed_paths or list(mutations),
+                cwd=state.get("workspace_root"),
+            )
     return with_trace(
         "delegate_implementation",
         state,
@@ -811,9 +875,10 @@ def gate_execution_node(state: GraphState) -> StateUpdate:
     print("[Node: Gate Execution] Running deterministic validation gates...")
     if "FAIL_GATES" not in state["change_id"]:
         commands = state.get("gate_commands", [])
-        if not commands:
+        commands_by_repo = state.get("gate_commands_by_repo", {})
+        if not commands and not commands_by_repo:
             update = cast(StateUpdate, {"gate_status": "passed"})
-            return with_trace("gate_execution", state, update, input_keys=["gate_commands", "workspace_root"])
+            return with_trace("gate_execution", state, update, input_keys=["gate_commands", "gate_commands_by_repo", "workspace_root"])
 
         violations = validate_gate_commands_for_state(state)
         if violations:
@@ -830,19 +895,38 @@ def gate_execution_node(state: GraphState) -> StateUpdate:
                 ],
                 "retry_counters": _increment_counter(state["retry_counters"], "policy"),
             })
-            return with_trace("gate_execution", state, update, input_keys=["gate_commands", "workspace_root"])
+            return with_trace("gate_execution", state, update, input_keys=["gate_commands", "gate_commands_by_repo", "workspace_root"])
 
-        cwds: list[str | None] = [
-            str(worktree.get("worktree_path"))
-            for worktree in state.get("worktree_results") or []
-            if worktree.get("worktree_path")
-        ] or [state.get("workspace_root")]
         results: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
-        for cwd in cwds:
-            cwd_results, cwd_errors = run_gate_commands(commands, cwd=cwd)
-            results.extend(cwd_results)
-            errors.extend(cwd_errors)
+        worktrees = [
+            worktree
+            for worktree in state.get("worktree_results") or []
+            if worktree.get("worktree_path")
+        ]
+        if worktrees:
+            for worktree in worktrees:
+                repo = str(worktree.get("repo", "")) or None
+                cwd = str(worktree.get("worktree_path"))
+                if commands:
+                    cwd_results, cwd_errors = run_gate_commands(commands, cwd=cwd)
+                    results.extend(_tag_gate_entries(cwd_results, repo=repo, cwd=cwd))
+                    errors.extend(_tag_gate_entries(cwd_errors, repo=repo, cwd=cwd))
+                repo_commands = commands_by_repo.get(repo or "", [])
+                if repo_commands:
+                    cwd_results, cwd_errors = run_gate_commands(repo_commands, cwd=cwd)
+                    results.extend(_tag_gate_entries(cwd_results, repo=repo, cwd=cwd))
+                    errors.extend(_tag_gate_entries(cwd_errors, repo=repo, cwd=cwd))
+        else:
+            workspace_cwd = state.get("workspace_root")
+            if commands:
+                cwd_results, cwd_errors = run_gate_commands(commands, cwd=workspace_cwd)
+                results.extend(_tag_gate_entries(cwd_results, repo=None, cwd=workspace_cwd))
+                errors.extend(_tag_gate_entries(cwd_errors, repo=None, cwd=workspace_cwd))
+            for repo, repo_commands in commands_by_repo.items():
+                cwd_results, cwd_errors = run_gate_commands(repo_commands, cwd=workspace_cwd)
+                results.extend(_tag_gate_entries(cwd_results, repo=repo, cwd=workspace_cwd))
+                errors.extend(_tag_gate_entries(cwd_errors, repo=repo, cwd=workspace_cwd))
         if errors:
             update = cast(StateUpdate, {
                 "gate_results": results,
@@ -850,9 +934,9 @@ def gate_execution_node(state: GraphState) -> StateUpdate:
                 "retry_counters": _increment_counter(state["retry_counters"], "ci"),
                 "gate_status": "failed",
             })
-            return with_trace("gate_execution", state, update, input_keys=["gate_commands", "workspace_root"])
+            return with_trace("gate_execution", state, update, input_keys=["gate_commands", "gate_commands_by_repo", "workspace_root"])
         update = cast(StateUpdate, {"gate_results": results, "gate_status": "passed"})
-        return with_trace("gate_execution", state, update, input_keys=["gate_commands", "workspace_root"])
+        return with_trace("gate_execution", state, update, input_keys=["gate_commands", "gate_commands_by_repo", "workspace_root"])
 
     domain = "security"
     error = {

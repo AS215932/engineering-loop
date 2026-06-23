@@ -276,7 +276,12 @@ def assemble_backend_prompt(task_spec: TaskSpec, constraints: BackendConstraints
         "- Touch only paths under the allowed prefixes below; anything else fails policy.",
         "- No secret material, credentials, or environment-specific tokens in any file.",
         f"- Budget: {constraints.max_iterations} iterations, "
-        f"{int(constraints.max_wall_clock_seconds)}s wall clock.",
+        f"{int(constraints.max_wall_clock_seconds)}s wall clock"
+        + (
+            f", ${constraints.max_cost_usd:.2f} reported harness cost."
+            if constraints.max_cost_usd is not None
+            else "."
+        ),
     ])
     for repo, prefixes in sorted(task_spec.allowed_paths.items()):
         lines.append(f"- Allowed paths ({repo}): {', '.join(prefixes) or 'none configured'}")
@@ -548,6 +553,122 @@ class MockBackend:
         )
 
 
+def _content_text(message: Mapping[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for item in content:
+        if isinstance(item, dict) and isinstance(item.get("text"), str):
+            parts.append(str(item["text"]))
+    return "".join(parts)
+
+
+def _usage_value(raw_usage: Mapping[str, Any], primary: str, fallback: str) -> Any:
+    value = raw_usage.get(primary)
+    return raw_usage.get(fallback) if value is None else value
+
+
+def _usage_from_pi_message(message: Mapping[str, Any]) -> dict[str, Any] | None:
+    raw_usage = message.get("usage")
+    if not isinstance(raw_usage, dict):
+        return None
+    raw_cost = raw_usage.get("cost")
+    cost = raw_cost if isinstance(raw_cost, dict) else {}
+    return {
+        "usage": {
+            "input_tokens": _usage_value(raw_usage, "input", "input_tokens"),
+            "output_tokens": _usage_value(raw_usage, "output", "output_tokens"),
+        },
+        "total_cost_usd": cost.get("total") if isinstance(cost, dict) else None,
+    }
+
+
+def _pi_message_is_error(message: Mapping[str, Any]) -> bool:
+    stop_reason = str(message.get("stopReason", "")).lower()
+    return bool(
+        stop_reason in {"abort", "aborted", "cancel", "cancelled", "canceled", "error"}
+        or message.get("errorMessage")
+        or message.get("error")
+    )
+
+
+PI_JSON_EVENT_TYPES = frozenset(
+    {
+        "session",
+        "agent_start",
+        "turn_start",
+        "message_start",
+        "message_update",
+        "message_end",
+        "turn_end",
+        "agent_end",
+        "error",
+        "agent_error",
+    }
+)
+
+
+def _is_pi_json_event(value: Mapping[str, Any]) -> bool:
+    return value.get("type") in PI_JSON_EVENT_TYPES
+
+
+def _parse_pi_json_events(stdout: str) -> dict[str, Any]:
+    """Map pi ``--mode json`` NDJSON events into the generic harness schema."""
+    events: list[dict[str, Any]] = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            decoded = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(decoded, dict):
+            events.append(decoded)
+    if not events:
+        return {}
+
+    parsed: dict[str, Any] = {"num_turns": 0, "is_error": False}
+    for event in events:
+        event_type = event.get("type")
+        if event_type == "turn_end":
+            parsed["num_turns"] = int(parsed.get("num_turns", 0)) + 1
+        if event_type in {"error", "agent_error"} or event.get("error"):
+            parsed["is_error"] = True
+
+        message = event.get("message")
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            if _pi_message_is_error(message):
+                parsed["is_error"] = True
+            usage = _usage_from_pi_message(message)
+            if usage is not None:
+                parsed.update(usage)
+            text = _content_text(message)
+            if text:
+                parsed["result"] = text
+
+        messages = event.get("messages")
+        if isinstance(messages, list):
+            for candidate in messages:
+                if not isinstance(candidate, dict) or candidate.get("role") != "assistant":
+                    continue
+                if _pi_message_is_error(candidate):
+                    parsed["is_error"] = True
+                usage = _usage_from_pi_message(candidate)
+                if usage is not None:
+                    parsed.update(usage)
+                text = _content_text(candidate)
+                if text:
+                    parsed["result"] = text
+
+    if int(parsed.get("num_turns", 0)) < 1:
+        parsed["num_turns"] = 1
+    return parsed
+
+
 class SubprocessBackend:
     """Shared driver for real coding-agent harnesses run as subprocesses."""
 
@@ -579,7 +700,9 @@ class SubprocessBackend:
         try:
             decoded = json.loads(stdout)
         except (json.JSONDecodeError, ValueError):
-            return {}
+            return _parse_pi_json_events(stdout)
+        if isinstance(decoded, dict) and _is_pi_json_event(decoded):
+            return _parse_pi_json_events(stdout)
         return decoded if isinstance(decoded, dict) else {}
 
     def execute(
@@ -702,6 +825,24 @@ class SubprocessBackend:
                 cost=cost,
                 error=f"harness exited with code {returncode}",
             )
+        if (
+            constraints.max_cost_usd is not None
+            and cost.reported
+            and cost.usd is not None
+            and cost.usd > constraints.max_cost_usd
+        ):
+            return _result(
+                "budget_exhausted",
+                diff=diff,
+                changed=tuple(changed),
+                transcript=transcript_path,
+                iterations=iterations,
+                cost=cost,
+                notes=(
+                    f"reported harness cost ${cost.usd:.4f} exceeded "
+                    f"run budget ${constraints.max_cost_usd:.4f}; partial work kept for inspection"
+                ),
+            )
         return _result(
             "completed",
             diff=diff,
@@ -716,13 +857,14 @@ class SubprocessBackend:
 class PiBackend(SubprocessBackend):
     """Non-interactive ``pi`` invocation in the worktree.
 
-    The default argv mirrors the ``claude -p`` convention; override the
-    command per-deployment through the ``backends.definitions`` section of
-    ``model-policy.yml`` if the local ``pi`` build differs.
+    ``--mode json`` emits newline-delimited session events; the shared parser
+    maps those events back into the cost/usage fields the loop ledger expects.
+    Override the command per-deployment through ``model-policy.yml`` only when
+    the local ``pi`` build differs.
     """
 
     name = "pi"
-    default_command = ("pi", "--print", "{prompt}")
+    default_command = ("pi", "--print", "--mode", "json", "{prompt}")
     extra_env_names = PI_PROVIDER_ENV_NAMES
 
 
@@ -815,13 +957,17 @@ def task_spec_from_state(state: GraphState) -> TaskSpec:
         if tail:
             journal_parts.append(tail)
 
+    gate_commands: list[list[str]] = list(state.get("gate_commands", []))
+    for commands in state.get("gate_commands_by_repo", {}).values():
+        gate_commands.extend(commands)
+
     return TaskSpec(
         change_id=state["change_id"],
         change_class=str(state["change_class"]),
         risk_level=str(state["risk_level"]),
         request=state.get("feature_request", ""),
         allowed_paths=allowed,
-        gate_commands=tuple(tuple(command) for command in state.get("gate_commands", [])),
+        gate_commands=tuple(tuple(command) for command in gate_commands),
         transcript_dir=state.get("handoff_output_dir") or os.environ.get("HYRULE_HANDOFF_DIR"),
         intent=str(spec.get("intent", "")),
         acceptance_criteria=tuple(criteria),
