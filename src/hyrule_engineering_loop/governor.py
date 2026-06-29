@@ -44,6 +44,7 @@ GOVERNOR_NAME = "Reliability Governor"
 GOVERNOR_ROLE = "staff_sre_autonomous_operations"
 CONTROLLED_LOOPS: tuple[str, ...] = ("engineering", "noc", "knowledge")
 DEFAULT_STRONG_HISTORY_SUCCESSES = 5
+LHP_FETCH_ERROR_PREFIX = "fetch_error:"
 
 SourceLoop = Literal["human", "noc", "knowledge", "scheduled_miner", "unknown"]
 ControlledLoop = Literal["engineering", "noc", "knowledge"]
@@ -511,10 +512,18 @@ def governor_once(
             knowledge_loader=knowledge_loader,
         )
         if not config.dry_run:
-            path = write_decision_record(record, config.state_dir)
+            path = decision_record_path(record, config.state_dir)
             record.storage_path = str(path)
-            post_decision_record(issue, record, client=client)
-            apply_label_transition(issue, record, client=client)
+            if path.exists():
+                if _labels_already_converged(issue, record):
+                    report.skipped.append(f"{issue.issue_id}: unchanged decision {record.record_id}")
+                else:
+                    apply_label_transition(issue, record, client=client)
+            else:
+                post_decision_record(issue, record, client=client)
+                path = write_decision_record(record, config.state_dir)
+                record.storage_path = str(path)
+                apply_label_transition(issue, record, client=client)
         report.records.append(record)
     return report
 
@@ -558,12 +567,19 @@ def govern_issue(
     if pointer is not None:
         active_lhp = lhp_config or LhpClientConfig.from_env()
         if active_lhp.configured:
-            lhp_payload = fetch_lhp_payload(pointer, active_lhp, requester=lhp_requester)
-            lhp_summary = LhpAuthoritySummary(
-                handoff_id=pointer.handoff_id,
-                case_id=pointer.case_id,
-                payload_hash=payload_hash(lhp_payload)[:16],
-            )
+            try:
+                lhp_payload = fetch_lhp_payload(pointer, active_lhp, requester=lhp_requester)
+                lhp_summary = LhpAuthoritySummary(
+                    handoff_id=pointer.handoff_id,
+                    case_id=pointer.case_id,
+                    payload_hash=payload_hash(lhp_payload)[:16],
+                )
+            except Exception as exc:
+                lhp_summary = LhpAuthoritySummary(
+                    handoff_id=pointer.handoff_id,
+                    case_id=pointer.case_id,
+                    payload_hash=f"{LHP_FETCH_ERROR_PREFIX}{payload_hash(type(exc).__name__ + str(exc))[:12]}",
+                )
         else:
             lhp_summary = LhpAuthoritySummary(
                 handoff_id=pointer.handoff_id,
@@ -580,7 +596,7 @@ def govern_issue(
         registry=registry,
         issue=issue,
         knowledge=knowledge,
-        lhp_configured=lhp_summary is None or lhp_summary.payload_hash != "unfetched",
+        lhp_configured=lhp_summary is None or _lhp_payload_fetched(lhp_summary),
     )
     labels_to_add, labels_to_remove = labels_for_decision(decision)
     allowed_paths = capability.allowed_paths if capability is not None else []
@@ -604,8 +620,12 @@ def govern_issue(
             "schema": CDR_SCHEMA_VERSION,
             "issue": issue.issue_id,
             "classification": classification.model_dump(mode="json"),
+            "knowledge": knowledge.model_dump(mode="json"),
             "decision": decision,
-            "created_at": created_at,
+            "capability": capability.id if capability is not None else None,
+            "denial_reasons": denial_reasons,
+            "labels_to_add": labels_to_add,
+            "labels_to_remove": labels_to_remove,
         }
     )[:20]
     return CandidateDecisionRecord(
@@ -888,7 +908,7 @@ def _next_loop_for_decision(
         return "knowledge"
     if decision == "needs_context":
         if classification.source_loop == "noc" and (
-            lhp_summary is None or lhp_summary.payload_hash == "unfetched"
+            lhp_summary is None or not _lhp_payload_fetched(lhp_summary)
         ):
             return "noc"
         return "human"
@@ -1005,15 +1025,21 @@ def apply_label_transition(
 def write_decision_record(record: CandidateDecisionRecord, state_dir: Path) -> Path:
     """Store the structured CDR JSON locally for replay/audit."""
 
-    root = state_dir.expanduser().resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    filename = f"{_slug(record.repo)}-{record.issue_number}-{record.record_id}.json"
-    path = root / filename
+    path = decision_record_path(record, state_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(record.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     return path
+
+
+def decision_record_path(record: CandidateDecisionRecord, state_dir: Path) -> Path:
+    """Return the local audit path for a stable decision record id."""
+
+    root = state_dir.expanduser().resolve()
+    filename = f"{_slug(record.repo)}-{record.issue_number}-{record.record_id}.json"
+    return root / filename
 
 
 def _load_governor_knowledge(
@@ -1202,6 +1228,17 @@ def _capability_denials(
 
 def _capability_source_loops(capability: CapabilityEnvelope) -> list[SourceLoop]:
     return capability.source_loops or capability.allowed_source_loops
+
+
+def _lhp_payload_fetched(summary: LhpAuthoritySummary) -> bool:
+    return summary.payload_hash != "unfetched" and not summary.payload_hash.startswith(LHP_FETCH_ERROR_PREFIX)
+
+
+def _labels_already_converged(issue: IssueSnapshot, record: CandidateDecisionRecord) -> bool:
+    labels = set(issue.labels)
+    return all(label in labels for label in record.labels_to_add) and all(
+        label not in labels for label in record.labels_to_remove
+    )
 
 
 def _has_sensitive_gate(classification: IssueClassification) -> bool:

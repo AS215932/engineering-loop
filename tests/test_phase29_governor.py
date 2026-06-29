@@ -138,6 +138,15 @@ def test_checked_in_capability_registry_validates() -> None:
     assert registry.capabilities[1].learning_required is True
 
 
+def test_production_daemon_unit_allows_auto_approved_tier1_paths() -> None:
+    service_path = Path(__file__).resolve().parents[1] / "configs" / "loop" / "hyrule-engineering-loop.service"
+    service = service_path.read_text(encoding="utf-8")
+
+    assert "--allow engineering-loop=monitoring" in service
+    assert "--allow hyrule-infra=alerts" in service
+    assert "--allow hyrule-noc-agent=config" in service
+
+
 def test_reliability_governor_cli_is_primary_and_governor_is_alias() -> None:
     parser = build_parser()
 
@@ -284,6 +293,31 @@ def test_reliability_governor_posts_record_before_applying_labels_and_stores_jso
     assert stored_record["routing_decision"] == "allow_approved"
 
 
+def test_unchanged_candidate_decision_is_not_reposted(tmp_path: Path) -> None:
+    issue = _issue(
+        title="Update internal service helper",
+        body="Change the helper implementation. Verify by running a smoke check. Rollback by reverting.",
+        repo="AS215932/hyrule-cloud",
+        labels=[CANDIDATE_LABEL],
+    )
+    gh = FakeGh([_issue_json(issue)])
+    config = ReliabilityGovernorConfig(
+        repos=(issue.repo,),
+        state_dir=tmp_path / "reliability-governor",
+        dry_run=False,
+    )
+
+    first = reliability_governor_once(config, client=gh, knowledge_loader=_knowledge)
+    gh.issues[0]["updatedAt"] = "2026-06-29T10:15:00Z"
+    second = reliability_governor_once(config, client=gh, knowledge_loader=_knowledge)
+
+    comment_calls = [call for call in gh.calls if call[:2] == ["issue", "comment"]]
+    assert first.records[0].routing_decision == "allow_candidate"
+    assert second.records[0].record_id == first.records[0].record_id
+    assert len(comment_calls) == 1
+    assert second.skipped == [f"{issue.issue_id}: unchanged decision {first.records[0].record_id}"]
+
+
 def _lhp_body() -> str:
     return """
 ## LHP-v1 authoritative input
@@ -344,6 +378,43 @@ def test_noc_lhp_handoff_uses_caseservice_payload_and_auto_approves_low_risk() -
     assert record.next_loop == "engineering"
     assert record.handoff_contract == "github_issue_labels"
     assert APPROVED_LABEL in record.labels_to_add
+
+
+def test_broken_lhp_fetch_routes_to_noc_context_without_starving_later_issues(tmp_path: Path) -> None:
+    broken = _issue(
+        title="[noc][lhp] broken disk handoff",
+        body=_lhp_body(),
+        labels=["engineering-handoff"],
+    )
+    docs = _issue(
+        title="Add missing docs runbook",
+        body="Document the runbook. Verify rendered docs.",
+        labels=[],
+    )
+    docs = docs.model_copy(update={"number": 43, "url": f"https://github.com/{docs.repo}/issues/43"})
+    gh = FakeGh([_issue_json(broken), _issue_json(docs)])
+
+    def requester(method: str, url: str, headers: dict[str, str] | None, data: bytes | None) -> tuple[int, dict[str, Any]]:
+        return 503, {"schema_version": "lhp.v1", "error": "temporarily unavailable"}
+
+    report = reliability_governor_once(
+        ReliabilityGovernorConfig(
+            repos=(broken.repo,),
+            state_dir=tmp_path / "reliability-governor",
+            dry_run=False,
+            lhp=LhpClientConfig(base_url="http://noc", secret="shared"),
+        ),
+        client=gh,
+        lhp_requester=requester,
+        knowledge_loader=_knowledge,
+    )
+
+    assert [record.issue_number for record in report.records] == [42, 43]
+    assert report.records[0].routing_decision == "needs_context"
+    assert report.records[0].next_loop == "noc"
+    assert report.records[0].lhp is not None
+    assert report.records[0].lhp.payload_hash.startswith("fetch_error:")
+    assert report.records[1].routing_decision == "allow_approved"
 
 
 def test_bgp_policy_and_secret_billing_work_are_not_auto_approved() -> None:

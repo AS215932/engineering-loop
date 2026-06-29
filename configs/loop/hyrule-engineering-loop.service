@@ -38,6 +38,24 @@ ExecStart=/opt/engineering-loop/.venv/bin/hyrule-engineering-loop daemon --once 
     --output-root /var/lib/engineering-loop/runs \
     --state-dir-path /var/lib/engineering-loop/state \
     --memory-dir /var/lib/engineering-loop/workspace/hyrule-infra/memory \
+    --allow engineering-loop=docs \
+    --allow engineering-loop=tests \
+    --allow engineering-loop=monitoring \
+    --allow engineering-loop=alerts \
+    --allow engineering-loop=config \
+    --allow engineering-loop=app/knowledge \
+    --allow hyrule-infra=docs \
+    --allow hyrule-infra=tests \
+    --allow hyrule-infra=monitoring \
+    --allow hyrule-infra=alerts \
+    --allow hyrule-infra=config \
+    --allow hyrule-infra=app/knowledge \
+    --allow hyrule-noc-agent=docs \
+    --allow hyrule-noc-agent=tests \
+    --allow hyrule-noc-agent=monitoring \
+    --allow hyrule-noc-agent=alerts \
+    --allow hyrule-noc-agent=config \
+    --allow hyrule-noc-agent=app/knowledge \
     --max-runs-per-day 2 \
     --max-cost-usd-per-day 10
 # A run never blocks the next timer fire indefinitely; the daemon enforces
