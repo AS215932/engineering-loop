@@ -168,6 +168,24 @@ def test_secret_assignment_is_detected_before_redacted_context_storage() -> None
     assert "token=abc123" not in seen_task_text[0]
 
 
+def test_decision_record_issue_hash_covers_long_body_tail() -> None:
+    approved_body = "Update documentation. Verify docs. " + ("a" * 5200)
+    edited_body = approved_body + "Tail edit changes the authorized task."
+    original = govern_issue(
+        _issue(title="Update docs", body=approved_body),
+        registry=default_capability_registry(),
+        knowledge_loader=_knowledge,
+    )
+    edited = govern_issue(
+        _issue(title="Update docs", body=edited_body),
+        registry=default_capability_registry(),
+        knowledge_loader=_knowledge,
+    )
+
+    assert original.issue_text_hash != edited.issue_text_hash
+    assert original.record_id != edited.record_id
+
+
 def test_checked_in_capability_registry_validates() -> None:
     registry_path = Path(__file__).resolve().parents[1] / "configs" / "loop" / "capability-registry.yml"
     registry = load_capability_registry(registry_path)

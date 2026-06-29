@@ -627,7 +627,7 @@ def govern_issue(
     )
     created_at = datetime.now(UTC).isoformat()
     authority_text_hash = payload_hash(task_text)
-    issue_text_hash = payload_hash(_authority_text(issue, None))
+    issue_text_hash = payload_hash({"title": issue.title, "body": issue.body})
     record_id = payload_hash(
         {
             "schema": CDR_SCHEMA_VERSION,

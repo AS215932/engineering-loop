@@ -23,7 +23,7 @@ from hyrule_engineering_loop.daemon import (
 )
 from hyrule_engineering_loop.cli import build_parser
 from hyrule_engineering_loop.intake import IntakeItem
-from hyrule_engineering_loop.lhp import payload_hash, safe_text
+from hyrule_engineering_loop.lhp import payload_hash
 from hyrule_engineering_loop.nodes import STALL_ROUND_LIMIT, delegate_implementation_node
 from hyrule_engineering_loop.promotion import rollback_promotions, setup_worktrees_for_state
 from hyrule_engineering_loop.state import GraphState
@@ -99,7 +99,7 @@ def _issue_view_with_reliability_decision(
         "record_id": "record-1",
         "repo": repo,
         "issue_number": number,
-        "issue_text_hash": payload_hash(safe_text(f"Add a docs note\n{body_for_hash}", limit=5000)),
+        "issue_text_hash": payload_hash({"title": "Add a docs note", "body": body_for_hash}),
         "routing_decision": routing_decision,
         "allowed_paths": allowed_paths,
     }
@@ -453,6 +453,36 @@ def test_daemon_rejects_stale_reliability_decision_after_issue_edit(tmp_path: Pa
                 allowed_paths=["docs/"],
                 current_body="## Context\nEdited to request a source change.\n",
                 approved_body="## Context\nAdd a docs note.\n",
+            ),
+        }
+    )
+
+    report = daemon_once(config, client=gh, feature_runner=lambda **kwargs: pytest.fail("runner should not start"))
+
+    assert report.outcome == "needs_triage"
+    assert report.detail == "Reliability Decision Record is stale for the current issue title/body"
+
+
+def test_daemon_rejects_stale_reliability_decision_after_long_body_tail_edit(tmp_path: Path) -> None:
+    repo = "AS215932/engineering-loop"
+    approved_body = "## Context\n" + ("a" * 5200)
+    current_body = approved_body + "\nEdit past the old hash boundary: run source migration."
+    config = DaemonConfig(
+        repos=(repo,),
+        state_dir=tmp_path / "state",
+        output_root=tmp_path / "runs",
+        require_reliability_decision=True,
+        reliability_decision_authors=("trusted-governor",),
+    )
+    gh = FakeGh(
+        {
+            "issue list": _approved_issue_json(1, repo=repo, labels=["loop:approved"]),
+            "issue view": _issue_view_with_reliability_decision(
+                1,
+                repo=repo,
+                allowed_paths=["docs/"],
+                current_body=current_body,
+                approved_body=approved_body,
             ),
         }
     )

@@ -37,7 +37,6 @@ from hyrule_engineering_loop.lhp import (
     payload_hash,
     post_lhp_update,
     render_lhp_request,
-    safe_text,
 )
 from hyrule_engineering_loop.intake import (
     APPROVED_LABEL,
@@ -497,7 +496,7 @@ def _normalize_path_prefix(path: str) -> str:
 
 
 def _issue_text_hash(title: str, body: str) -> str:
-    return payload_hash(safe_text(f"{title}\n{body}", limit=5000))
+    return payload_hash({"title": title, "body": body})
 
 
 def _prefix_within(child: str, parent: str) -> bool:
