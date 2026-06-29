@@ -30,7 +30,15 @@ from typing import Any, Callable, TypeAlias
 from hyrule_engineering_loop.agent_core_trace import emit_published_trace
 from hyrule_engineering_loop.feature import run_feature_intake
 from hyrule_engineering_loop.knowledge_context import KnowledgeContextConfig
-from hyrule_engineering_loop.lhp import LhpClientConfig, fetch_lhp_payload, parse_lhp_pointer, post_lhp_update, render_lhp_request
+from hyrule_engineering_loop.lhp import (
+    LhpClientConfig,
+    fetch_lhp_payload,
+    parse_lhp_pointer,
+    payload_hash,
+    post_lhp_update,
+    render_lhp_request,
+    safe_text,
+)
 from hyrule_engineering_loop.intake import (
     APPROVED_LABEL,
     GhClient,
@@ -425,6 +433,8 @@ def _extract_json_code_block(body: str) -> str | None:
 def _approval_scope_from_record(
     item: IntakeItem,
     payload: dict[str, Any],
+    *,
+    current_body: str,
 ) -> tuple[ReliabilityApprovalScope | None, str | None]:
     if payload.get("schema_version") != RELIABILITY_DECISION_SCHEMA_VERSION:
         return None, "Reliability Decision Record schema version is unsupported"
@@ -434,6 +444,11 @@ def _approval_scope_from_record(
         return None, "Reliability Decision Record issue_number is invalid"
     if payload.get("repo") != item.repo or issue_number != item.number:
         return None, "Reliability Decision Record does not match the approved issue"
+    expected_issue_hash = payload.get("issue_text_hash")
+    if not isinstance(expected_issue_hash, str) or not expected_issue_hash:
+        return None, "Reliability Decision Record does not include issue_text_hash"
+    if expected_issue_hash != _issue_text_hash(item.title, current_body):
+        return None, "Reliability Decision Record is stale for the current issue title/body"
     if payload.get("routing_decision") != "allow_approved":
         decision = str(payload.get("routing_decision", "unknown"))
         return None, f"latest Reliability Decision Record is {decision}, not allow_approved"
@@ -459,6 +474,10 @@ def _normalize_path_prefix(path: str) -> str:
     if normalized.endswith("/") and normalized != "/":
         normalized = normalized.rstrip("/")
     return normalized
+
+
+def _issue_text_hash(title: str, body: str) -> str:
+    return payload_hash(safe_text(f"{title}\n{body}", limit=5000))
 
 
 def _prefix_within(child: str, parent: str) -> bool:
@@ -489,6 +508,7 @@ def _approved_allowed_paths(
     item: IntakeItem,
     *,
     client: GhClient,
+    current_body: str,
     static_allowed_paths: list[str],
     require_reliability_decision: bool,
 ) -> tuple[list[str] | None, str | None]:
@@ -500,7 +520,7 @@ def _approved_allowed_paths(
             return None, "approved issue has no Reliability Decision Record"
         return static_allowed_paths, None
 
-    scope, scope_error = _approval_scope_from_record(item, payload)
+    scope, scope_error = _approval_scope_from_record(item, payload, current_body=current_body)
     if scope_error is not None:
         return None, scope_error
     assert scope is not None
@@ -593,6 +613,7 @@ def daemon_once(
         effective_allowed_paths, approval_error = _approved_allowed_paths(
             item,
             client=client,
+            current_body=body,
             static_allowed_paths=static_allowed_paths,
             require_reliability_decision=config.require_reliability_decision,
         )

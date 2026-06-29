@@ -276,6 +276,8 @@ class CandidateDecisionRecord(BaseModel):
     issue_id: str
     repo: str
     issue_number: int
+    authority_text_hash: str
+    issue_text_hash: str
     source: SourceLoop
     intent_type: IntentType
     risk_tier: int = Field(ge=0, le=4)
@@ -347,7 +349,7 @@ def default_capability_registry() -> CapabilityRegistry:
                     "id": "tier0.docs-runbooks-tests",
                     "domains": ["docs", "runbook", "tests", "dashboard"],
                     "allowed_repos": ["*"],
-                    "allowed_paths": ["docs/", "README.md", "tests/", ".github/"],
+                    "allowed_paths": ["docs/", "README.md", "tests/", ".github/", "dashboards/"],
                     "forbidden_paths": ["secrets/", "**/secrets/", ".env", ".env."],
                     "target_loops": ["engineering"],
                     "source_loops": ["human", "noc", "knowledge", "scheduled_miner"],
@@ -620,11 +622,14 @@ def govern_issue(
         next_loop=next_loop,
     )
     created_at = datetime.now(UTC).isoformat()
+    authority_text_hash = payload_hash(task_text)
+    issue_text_hash = payload_hash(_authority_text(issue, None))
     record_id = payload_hash(
         {
             "schema": CDR_SCHEMA_VERSION,
             "issue": issue.issue_id,
-            "authority_text_hash": payload_hash(task_text),
+            "authority_text_hash": authority_text_hash,
+            "issue_text_hash": issue_text_hash,
             "classification": classification.model_dump(mode="json"),
             "knowledge": knowledge.model_dump(mode="json"),
             "decision": decision,
@@ -640,6 +645,8 @@ def govern_issue(
         issue_id=issue.issue_id,
         repo=issue.repo,
         issue_number=issue.number,
+        authority_text_hash=authority_text_hash,
+        issue_text_hash=issue_text_hash,
         source=classification.source_loop,
         intent_type=classification.intent_type,
         risk_tier=classification.risk_tier,

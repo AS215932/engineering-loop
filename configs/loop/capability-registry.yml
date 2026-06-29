@@ -13,6 +13,7 @@ capabilities:
       - README.md
       - tests/
       - .github/
+      - dashboards/
     forbidden_paths:
       - secrets/
       - "**/secrets/"

@@ -23,6 +23,7 @@ from hyrule_engineering_loop.daemon import (
 )
 from hyrule_engineering_loop.cli import build_parser
 from hyrule_engineering_loop.intake import IntakeItem
+from hyrule_engineering_loop.lhp import payload_hash, safe_text
 from hyrule_engineering_loop.nodes import STALL_ROUND_LIMIT, delegate_implementation_node
 from hyrule_engineering_loop.promotion import rollback_promotions, setup_worktrees_for_state
 from hyrule_engineering_loop.state import GraphState
@@ -88,12 +89,16 @@ def _issue_view_with_reliability_decision(
     repo: str,
     allowed_paths: list[str],
     routing_decision: str = "allow_approved",
+    current_body: str = "## Context\nAdd a docs note.\n",
+    approved_body: str | None = None,
 ) -> str:
+    body_for_hash = approved_body if approved_body is not None else current_body
     payload = {
         "schema_version": "reliability-governor.cdr.v1",
         "record_id": "record-1",
         "repo": repo,
         "issue_number": number,
+        "issue_text_hash": payload_hash(safe_text(f"Add a docs note\n{body_for_hash}", limit=5000)),
         "routing_decision": routing_decision,
         "allowed_paths": allowed_paths,
     }
@@ -109,7 +114,7 @@ def _issue_view_with_reliability_decision(
     )
     return json.dumps(
         {
-            "body": "## Context\nAdd a docs note.\n",
+            "body": current_body,
             "comments": [{"body": comment, "createdAt": "2026-06-29T10:00:00Z"}],
         }
     )
@@ -386,6 +391,33 @@ def test_daemon_rejects_non_approved_reliability_decision(tmp_path: Path) -> Non
 
     assert report.outcome == "needs_triage"
     assert report.detail == "latest Reliability Decision Record is allow_candidate, not allow_approved"
+
+
+def test_daemon_rejects_stale_reliability_decision_after_issue_edit(tmp_path: Path) -> None:
+    repo = "AS215932/engineering-loop"
+    config = DaemonConfig(
+        repos=(repo,),
+        state_dir=tmp_path / "state",
+        output_root=tmp_path / "runs",
+        require_reliability_decision=True,
+    )
+    gh = FakeGh(
+        {
+            "issue list": _approved_issue_json(1, repo=repo, labels=["loop:approved"]),
+            "issue view": _issue_view_with_reliability_decision(
+                1,
+                repo=repo,
+                allowed_paths=["docs/"],
+                current_body="## Context\nEdited to request a source change.\n",
+                approved_body="## Context\nAdd a docs note.\n",
+            ),
+        }
+    )
+
+    report = daemon_once(config, client=gh, feature_runner=lambda **kwargs: pytest.fail("runner should not start"))
+
+    assert report.outcome == "needs_triage"
+    assert report.detail == "Reliability Decision Record is stale for the current issue title/body"
 
 
 def test_repo_name_for_issue_maps_core_repo_checkout_names() -> None:

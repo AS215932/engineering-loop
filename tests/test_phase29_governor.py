@@ -136,6 +136,8 @@ def test_decision_record_schema_validates_and_docs_runbook_auto_approves() -> No
     assert record.knowledge_authority_level == "A0"
     assert record.governor_name == GOVERNOR_NAME
     assert record.governor_role == GOVERNOR_ROLE
+    assert record.authority_text_hash
+    assert record.issue_text_hash
     assert record.next_loop == "engineering"
     assert record.handoff_contract == "github_issue_labels"
     ReliabilityDecisionRecord.model_validate(record.model_dump(mode="json"))
@@ -154,6 +156,25 @@ def test_checked_in_capability_registry_validates() -> None:
     assert all(capability.target_loops == ["engineering"] for capability in registry.capabilities)
     assert registry.capabilities[1].verification_owner == "noc"
     assert registry.capabilities[1].learning_required is True
+    assert "dashboards/" in registry.capabilities[0].allowed_paths
+
+
+def test_dashboard_requests_are_in_tier0_path_envelope() -> None:
+    issue = _issue(
+        title="Add Grafana dashboard panel",
+        body="Add dashboard coverage. Verify the dashboard renders. Rollback by reverting.",
+    )
+
+    record = govern_issue(
+        issue,
+        registry=default_capability_registry(),
+        knowledge_loader=_knowledge,
+    )
+
+    assert record.routing_decision == "allow_approved"
+    assert record.matched_capability == "tier0.docs-runbooks-tests"
+    assert "dashboards/" in record.expected_paths
+    assert "dashboards/" in record.allowed_paths
 
 
 def test_production_daemon_unit_allows_auto_approved_tier1_paths() -> None:
@@ -168,6 +189,8 @@ def test_production_daemon_unit_allows_auto_approved_tier1_paths() -> None:
     assert "--allow hyrule-noc-agent=config" in service
     assert "--allow hyrule-noc-agent=.github" in service
     assert "--allow hyrule-noc-agent=README.md" in service
+    assert "--allow engineering-loop=dashboards" in service
+    assert "--allow hyrule-noc-agent=dashboards" in service
     assert "--allow hyrule-noc-agent=src" in service
     assert "--allow hyrule-noc-agent=scripts" in service
     assert "--allow hyrule-cloud=hyrule_cloud" in service
