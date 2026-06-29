@@ -19,6 +19,7 @@ from hyrule_engineering_loop.feature import (
     run_feature_dry_live,
     run_feature_intake,
 )
+from hyrule_engineering_loop.agent_core_trace import emit_published_trace
 from hyrule_engineering_loop.graph import build_graph
 from hyrule_engineering_loop.knowledge_context import KnowledgeContextConfig
 from hyrule_engineering_loop.intake import (
@@ -292,6 +293,7 @@ def pr_command(args: argparse.Namespace) -> int:
     state["pr_labels"] = args.label
     state["pr_reviewers"] = args.reviewer
     state["pr_create_github"] = args.create_github_pr
+    emit_published_trace(state, pr_results)
     _write_state(path, state)
     print(f"[CLI] published {len(pr_results)} promoted worktree(s)")
     return 0

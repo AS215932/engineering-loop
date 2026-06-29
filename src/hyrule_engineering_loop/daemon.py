@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, TypeAlias
 
+from hyrule_engineering_loop.agent_core_trace import emit_published_trace
 from hyrule_engineering_loop.feature import run_feature_intake
 from hyrule_engineering_loop.knowledge_context import KnowledgeContextConfig
 from hyrule_engineering_loop.lhp import LhpClientConfig, fetch_lhp_payload, parse_lhp_pointer, post_lhp_update, render_lhp_request
@@ -526,6 +527,7 @@ def daemon_once(
                 pr_reviewers=[],
                 create_github_pr=True,
             )
+            emit_published_trace(publish_state, pr_results)
             report.outcome = "published"
             github = pr_results[0].get("github_pr", {}) if pr_results else {}
             report.pr_url = github.get("url") if isinstance(github, dict) else None

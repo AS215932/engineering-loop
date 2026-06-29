@@ -54,7 +54,7 @@ def emit_loop_trace(state: Mapping[str, Any]) -> int:
         adapter = importlib.import_module("agent_core.adapters.engineering_loop")
         sink = _sink_from_env()
         run_id = state.get("change_id")
-        events = adapter.trace_events_from_loop_trace(dict(state), run_id=run_id)
+        events = adapter.trace_events_from_loop_trace(_trace_payload(state), run_id=run_id)
         count = 0
         for event in events:
             if sink.emit(event):
@@ -62,3 +62,28 @@ def emit_loop_trace(state: Mapping[str, Any]) -> int:
         return count
     except Exception:  # best-effort: emission must never break the loop
         return 0
+
+
+def emit_published_trace(state: Mapping[str, Any], pr_results: list[dict[str, Any]]) -> int:
+    """Re-emit trace after PR publication adds GitHub URL/commit metadata."""
+    if not pr_results:
+        return 0
+    return emit_loop_trace({**dict(state), "pr_status": "pushed", "pr_results": pr_results})
+
+
+def _trace_payload(state: Mapping[str, Any]) -> dict[str, Any]:
+    payload = dict(state)
+    pr_results = state.get("pr_results")
+    if not isinstance(pr_results, list) or not pr_results:
+        return payload
+    first = pr_results[0]
+    if not isinstance(first, Mapping):
+        return payload
+    github_pr = first.get("github_pr")
+    if isinstance(github_pr, Mapping) and github_pr.get("url") and not payload.get("pr_url"):
+        payload["pr_url"] = github_pr.get("url")
+    if first.get("commit") and not payload.get("commit_sha"):
+        payload["commit_sha"] = first.get("commit")
+    if first.get("repo") and not payload.get("repository"):
+        payload["repository"] = first.get("repo")
+    return payload
