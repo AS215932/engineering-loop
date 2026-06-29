@@ -162,6 +162,7 @@ class ReliabilityApprovalScope:
 
     record_id: str
     allowed_paths: tuple[str, ...]
+    lhp_payload_hash: str | None = None
 
 
 # --- lock ---------------------------------------------------------------
@@ -482,7 +483,20 @@ def _approval_scope_from_record(
     return ReliabilityApprovalScope(
         record_id=str(payload.get("record_id", "unknown")),
         allowed_paths=allowed_paths,
+        lhp_payload_hash=_record_lhp_payload_hash(payload),
     ), None
+
+
+def _record_lhp_payload_hash(payload: dict[str, Any]) -> str | None:
+    lhp = payload.get("lhp")
+    if not isinstance(lhp, dict):
+        return None
+    value = str(lhp.get("payload_hash") or "").strip().lower()
+    if len(value) < 12:
+        return None
+    if any(ch not in "0123456789abcdef" for ch in value):
+        return None
+    return value
 
 
 def _normalize_path_prefix(path: str) -> str:
@@ -531,30 +545,45 @@ def _approved_allowed_paths(
     static_allowed_paths: list[str],
     require_reliability_decision: bool,
     trusted_authors: tuple[str, ...],
-) -> tuple[list[str] | None, str | None]:
+) -> tuple[list[str] | None, ReliabilityApprovalScope | None, str | None]:
     if not require_reliability_decision and not trusted_authors:
-        return static_allowed_paths, None
+        return static_allowed_paths, None, None
     payload, payload_error = _latest_reliability_decision_payload(
         item,
         client=client,
         trusted_authors=trusted_authors,
     )
     if payload_error is not None:
-        return None, payload_error
+        return None, None, payload_error
     if payload is None:
         if require_reliability_decision:
-            return None, "approved issue has no Reliability Decision Record"
-        return static_allowed_paths, None
+            return None, None, "approved issue has no Reliability Decision Record"
+        return static_allowed_paths, None, None
 
     scope, scope_error = _approval_scope_from_record(item, payload, current_body=current_body)
     if scope_error is not None:
-        return None, scope_error
+        return None, None, scope_error
     assert scope is not None
 
     narrowed = _intersect_allowed_paths(static_allowed_paths, scope.allowed_paths)
     if not narrowed:
-        return None, f"Reliability Decision Record {scope.record_id} has no paths within daemon allowlist"
-    return narrowed, None
+        return None, None, f"Reliability Decision Record {scope.record_id} has no paths within daemon allowlist"
+    return narrowed, scope, None
+
+
+def _lhp_payload_hash_error(
+    payload: dict[str, Any],
+    scope: ReliabilityApprovalScope | None,
+) -> str | None:
+    if scope is None:
+        return None
+    expected = scope.lhp_payload_hash
+    if expected is None:
+        return f"Reliability Decision Record {scope.record_id} has no LHP payload hash"
+    current = payload_hash(payload)
+    if current[: len(expected)] != expected:
+        return f"Reliability Decision Record {scope.record_id} LHP payload hash is stale"
+    return None
 
 
 def _change_id_for(item: IntakeItem) -> str:
@@ -636,7 +665,7 @@ def daemon_once(
         body = _issue_body(item, client=client)
         repo_name = repo_name_for_issue(item)
         static_allowed_paths = list(config.allowed_paths_by_repo.get(repo_name, config.allowed_paths))
-        effective_allowed_paths, approval_error = _approved_allowed_paths(
+        effective_allowed_paths, approval_scope, approval_error = _approved_allowed_paths(
             item,
             client=client,
             current_body=body,
@@ -680,6 +709,25 @@ def daemon_once(
                     DaemonReport(
                         outcome="needs_triage",
                         detail=f"LHP fetch failed: {type(exc).__name__}: {str(exc)[:160]}",
+                        issue={"repo": item.repo, "number": item.number, "title": item.title},
+                        change_id=change_id,
+                    ),
+                    discord_poster,
+                    icinga_poster,
+                )
+            lhp_hash_error = _lhp_payload_hash_error(lhp_payload, approval_scope)
+            if lhp_hash_error is not None:
+                post_lhp_update(
+                    lhp_pointer,
+                    lhp_config,
+                    update_type="blocked",
+                    status="blocked",
+                    summary=lhp_hash_error,
+                )
+                return _finish(
+                    DaemonReport(
+                        outcome="needs_triage",
+                        detail=lhp_hash_error[:200],
                         issue={"repo": item.repo, "number": item.number, "title": item.title},
                         change_id=change_id,
                     ),

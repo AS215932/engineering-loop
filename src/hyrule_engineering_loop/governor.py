@@ -1160,14 +1160,14 @@ def _authority_text(issue: IssueSnapshot, lhp_payload: dict[str, Any] | None) ->
 
 def _classification_text(issue: IssueSnapshot, lhp_payload: dict[str, Any] | None) -> str:
     if lhp_payload is None:
-        return f"{issue.title}\n{issue.body}"[:7000]
+        return f"{issue.title}\n{issue.body}"
     selected = {
         "handoff": lhp_payload.get("handoff"),
         "case": lhp_payload.get("case"),
         "verification_objectives": lhp_payload.get("verification_objectives"),
         "knowledge_artifacts": lhp_payload.get("knowledge_artifacts"),
     }
-    return json.dumps(selected, sort_keys=True, default=str)[:9000]
+    return json.dumps(selected, sort_keys=True, default=str)
 
 
 def _eligible_for_governor(issue: IssueSnapshot) -> bool:

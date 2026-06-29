@@ -196,6 +196,24 @@ def test_decision_record_issue_hash_covers_long_body_tail() -> None:
     assert original.record_id != edited.record_id
 
 
+def test_classification_scans_full_issue_body_for_sensitive_tail() -> None:
+    body = (
+        "Update documentation. Verify docs. Rollback by reverting. "
+        + ("a" * 7200)
+        + " Rotate the API secret and update token credentials."
+    )
+
+    record = govern_issue(
+        _issue(title="Update docs", body=body),
+        registry=default_capability_registry(),
+        knowledge_loader=_knowledge,
+    )
+
+    assert record.intent_type == "secret"
+    assert record.routing_decision == "needs_human"
+    assert NEEDS_HUMAN_LABEL in record.labels_to_add
+
+
 def test_checked_in_capability_registry_validates() -> None:
     registry_path = Path(__file__).resolve().parents[1] / "configs" / "loop" / "capability-registry.yml"
     registry = load_capability_registry(registry_path)

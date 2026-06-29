@@ -23,7 +23,7 @@ from hyrule_engineering_loop.daemon import (
 )
 from hyrule_engineering_loop.cli import build_parser
 from hyrule_engineering_loop.intake import IntakeItem
-from hyrule_engineering_loop.lhp import payload_hash
+from hyrule_engineering_loop.lhp import LhpClientConfig, payload_hash
 from hyrule_engineering_loop.nodes import STALL_ROUND_LIMIT, delegate_implementation_node
 from hyrule_engineering_loop.promotion import rollback_promotions, setup_worktrees_for_state
 from hyrule_engineering_loop.state import GraphState
@@ -92,6 +92,7 @@ def _issue_view_with_reliability_decision(
     current_body: str = "## Context\nAdd a docs note.\n",
     approved_body: str | None = None,
     author_login: str = "trusted-governor",
+    lhp_payload_hash: str | None = None,
 ) -> str:
     body_for_hash = approved_body if approved_body is not None else current_body
     payload = {
@@ -103,6 +104,12 @@ def _issue_view_with_reliability_decision(
         "routing_decision": routing_decision,
         "allowed_paths": allowed_paths,
     }
+    if lhp_payload_hash is not None:
+        payload["lhp"] = {
+            "handoff_id": "handoff-1",
+            "case_id": "case-1",
+            "payload_hash": lhp_payload_hash,
+        }
     comment = "\n".join(
         [
             "<!-- reliability-governor-cdr:record-1 -->",
@@ -125,6 +132,28 @@ def _issue_view_with_reliability_decision(
             ],
         }
     )
+
+
+def _lhp_body() -> str:
+    return """
+## LHP-v1 authoritative input
+```json
+{"schema_version":"lhp.v1","handoff_id":"handoff-1","case_id":"case-1","fetch_path":"/loop-handoff/v1/engineering/handoffs/handoff-1"}
+```
+"""
+
+
+def _lhp_payload(objective: str) -> dict[str, Any]:
+    return {
+        "schema_version": "lhp.v1",
+        "handoff": {
+            "handoff_id": "handoff-1",
+            "case_id": "case-1",
+            "objective": objective,
+        },
+        "case": {"case_id": "case-1"},
+        "verification_objectives": [],
+    }
 
 
 # --- AC1: run lock ----------------------------------------------------------
@@ -522,6 +551,48 @@ def test_daemon_rejects_stale_reliability_decision_after_long_body_tail_edit(tmp
 
     assert report.outcome == "needs_triage"
     assert report.detail == "Reliability Decision Record is stale for the current issue title/body"
+
+
+def test_daemon_rejects_stale_lhp_payload_hash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = "AS215932/engineering-loop"
+    body = _lhp_body()
+    approved_payload = _lhp_payload("original disk follow-up")
+    current_payload = _lhp_payload("changed disk follow-up")
+    config = DaemonConfig(
+        repos=(repo,),
+        state_dir=tmp_path / "state",
+        output_root=tmp_path / "runs",
+        require_reliability_decision=True,
+        reliability_decision_authors=("trusted-governor",),
+        lhp=LhpClientConfig(
+            base_url="http://noc",
+            secret="shared",
+        ),
+    )
+    gh = FakeGh(
+        {
+            "issue list": _approved_issue_json(1, repo=repo, labels=["loop:approved"]),
+            "issue view": _issue_view_with_reliability_decision(
+                1,
+                repo=repo,
+                allowed_paths=["docs/"],
+                current_body=body,
+                lhp_payload_hash=payload_hash(approved_payload)[:16],
+            ),
+        }
+    )
+    monkeypatch.setattr(
+        "hyrule_engineering_loop.daemon.fetch_lhp_payload",
+        lambda *_args, **_kwargs: current_payload,
+    )
+
+    report = daemon_once(config, client=gh, feature_runner=lambda **kwargs: pytest.fail("runner should not start"))
+
+    assert report.outcome == "needs_triage"
+    assert report.detail == "Reliability Decision Record record-1 LHP payload hash is stale"
 
 
 def test_repo_name_for_issue_maps_core_repo_checkout_names() -> None:
