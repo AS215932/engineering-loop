@@ -601,6 +601,7 @@ def govern_issue(
         issue=issue,
         knowledge=knowledge,
         lhp_configured=lhp_summary is None or _lhp_payload_fetched(lhp_summary),
+        knowledge_authority_min=_knowledge_authority_min(knowledge_context),
     )
     labels_to_add, labels_to_remove = labels_for_decision(decision)
     allowed_paths = capability.allowed_paths if capability is not None else []
@@ -809,6 +810,7 @@ def decide_policy(
     issue: IssueSnapshot,
     knowledge: KnowledgeSummary,
     lhp_configured: bool,
+    knowledge_authority_min: str = "A4",
 ) -> tuple[RoutingDecision, CapabilityEnvelope | None, list[str], list[str]]:
     """Apply deterministic hard gates and capability policy."""
 
@@ -817,6 +819,12 @@ def decide_policy(
     if knowledge.status != "current":
         denial_reasons.extend(knowledge.reasons or [f"knowledge context is {knowledge.status}"])
         policy_rules.append("deny stale, contradictory, missing, or errored Knowledge context")
+        return "knowledge_gap", None, denial_reasons, policy_rules
+    if not _authority_satisfies(knowledge.authority_level_used, knowledge_authority_min):
+        denial_reasons.append(
+            f"Knowledge authority {knowledge.authority_level_used} is below required {knowledge_authority_min}"
+        )
+        policy_rules.append("deny Knowledge context below configured authority floor")
         return "knowledge_gap", None, denial_reasons, policy_rules
     if not lhp_configured and classification.source_loop == "noc":
         denial_reasons.append("NOC LHP pointer was present but CaseService payload was not fetched")
@@ -1232,6 +1240,22 @@ def _capability_denials(
 
 def _capability_source_loops(capability: CapabilityEnvelope) -> list[SourceLoop]:
     return capability.source_loops or capability.allowed_source_loops
+
+
+def _knowledge_authority_min(config: KnowledgeContextConfig | None) -> str:
+    if config is None:
+        return "A4"
+    return config.authority_min
+
+
+def _authority_satisfies(level: str, minimum: str) -> bool:
+    actual = _authority_rank(level)
+    required = _authority_rank(minimum)
+    return actual is not None and required is not None and actual <= required
+
+
+def _authority_rank(level: str) -> int | None:
+    return {"A0": 0, "A1": 1, "A2": 2, "A3": 3, "A4": 4}.get(level)
 
 
 def _lhp_payload_fetched(summary: LhpAuthoritySummary) -> bool:

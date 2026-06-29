@@ -34,12 +34,15 @@ ExecStart=/opt/engineering-loop/.venv/bin/hyrule-engineering-loop daemon --once 
     --repo AS215932/hyrule-mcp \
     --repo AS215932/noc-agent \
     --repo AS215932/hyrule-network-proxy \
+    --repo AS215932/as215932.net \
     --workspace-root /var/lib/engineering-loop/workspace \
     --output-root /var/lib/engineering-loop/runs \
     --state-dir-path /var/lib/engineering-loop/state \
     --memory-dir /var/lib/engineering-loop/workspace/hyrule-infra/memory \
     --allow engineering-loop=docs \
     --allow engineering-loop=tests \
+    --allow engineering-loop=.github \
+    --allow engineering-loop=README.md \
     --allow engineering-loop=monitoring \
     --allow engineering-loop=alerts \
     --allow engineering-loop=config \
@@ -57,6 +60,8 @@ ExecStart=/opt/engineering-loop/.venv/bin/hyrule-engineering-loop daemon --once 
     --allow hyrule-infra=app/knowledge \
     --allow hyrule-noc-agent=docs \
     --allow hyrule-noc-agent=tests \
+    --allow hyrule-noc-agent=.github \
+    --allow hyrule-noc-agent=README.md \
     --allow hyrule-noc-agent=monitoring \
     --allow hyrule-noc-agent=alerts \
     --allow hyrule-noc-agent=config \

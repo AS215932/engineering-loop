@@ -26,6 +26,7 @@ from hyrule_engineering_loop.governor import (
     reliability_governor_once,
     summarize_knowledge_pack,
 )
+from hyrule_engineering_loop.knowledge_context import KnowledgeContextConfig
 from hyrule_engineering_loop.lhp import LhpClientConfig
 from hyrule_engineering_loop.cli import build_parser
 
@@ -50,6 +51,19 @@ STALE_PACK: dict[str, Any] = {
     "freshness_status": "stale",
 }
 
+LOW_AUTHORITY_PACK: dict[str, Any] = {
+    **CURRENT_PACK,
+    "id": "ctx_governor_low_authority",
+    "included_refs": [
+        {
+            "concept_id": "generated/services/engineering-loop",
+            "authority_tier": "A4",
+            "freshness_status": "current",
+            "title": "Low authority generated context",
+        }
+    ],
+}
+
 
 class FakeGh:
     def __init__(self, issues: list[dict[str, Any]]) -> None:
@@ -69,6 +83,10 @@ def _knowledge(_: str, __: Any) -> Any:
 
 def _stale_knowledge(_: str, __: Any) -> Any:
     return summarize_knowledge_pack(STALE_PACK)
+
+
+def _low_authority_knowledge(_: str, __: Any) -> Any:
+    return summarize_knowledge_pack(LOW_AUTHORITY_PACK)
 
 
 def _issue(
@@ -143,12 +161,17 @@ def test_production_daemon_unit_allows_auto_approved_tier1_paths() -> None:
     service = service_path.read_text(encoding="utf-8")
 
     assert "--allow engineering-loop=monitoring" in service
+    assert "--allow engineering-loop=.github" in service
+    assert "--allow engineering-loop=README.md" in service
     assert "--allow engineering-loop=src" in service
     assert "--allow hyrule-infra=alerts" in service
     assert "--allow hyrule-noc-agent=config" in service
+    assert "--allow hyrule-noc-agent=.github" in service
+    assert "--allow hyrule-noc-agent=README.md" in service
     assert "--allow hyrule-noc-agent=src" in service
     assert "--allow hyrule-noc-agent=scripts" in service
     assert "--allow hyrule-cloud=hyrule_cloud" in service
+    assert "--repo AS215932/as215932.net" in service
 
 
 def test_reliability_governor_cli_is_primary_and_governor_is_alias() -> None:
@@ -262,6 +285,26 @@ def test_stale_knowledge_blocks_label_approval() -> None:
     assert record.next_loop == "knowledge"
     assert record.handoff_contract == "knowledge_context_pack"
     assert "Knowledge context is stale" in record.denial_reasons
+
+
+def test_low_authority_knowledge_blocks_label_approval_when_floor_requires_a1() -> None:
+    issue = _issue(
+        title="Fix docs typo",
+        body="Update documentation and verify rendered docs.",
+    )
+
+    record = govern_issue(
+        issue,
+        registry=default_capability_registry(),
+        knowledge_context=KnowledgeContextConfig(enabled=True, authority_min="A1"),
+        knowledge_loader=_low_authority_knowledge,
+    )
+
+    assert record.routing_decision == "knowledge_gap"
+    assert KNOWLEDGE_GAP_LABEL in record.labels_to_add
+    assert APPROVED_LABEL not in record.labels_to_add
+    assert record.next_loop == "knowledge"
+    assert "Knowledge authority A4 is below required A1" in record.denial_reasons
 
 
 def test_reliability_governor_posts_record_before_applying_labels_and_stores_json(tmp_path: Path) -> None:
