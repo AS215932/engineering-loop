@@ -11,8 +11,8 @@ resolution-markers = [
 
 [[package]]
 name = "agent-core"
-version = "0.1.0"
-source = { git = "https://github.com/AS215932/agent-core?tag=v0.1.0#591e3a0e11b97700c2179bd8f6257ffc7383e668" }
+version = "0.4.0"
+source = { git = "https://github.com/AS215932/agent-core?tag=v0.4.0#0faf25793eaa0ca4ad74382f544aa2e10d7c80db" }
 dependencies = [
     { name = "pydantic" },
 ]
@@ -365,7 +365,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-core", git = "https://github.com/AS215932/agent-core?tag=v0.1.0" },
+    { name = "agent-core", git = "https://github.com/AS215932/agent-core?tag=v0.4.0" },
     { name = "langgraph", specifier = ">=0.2.70" },
     { name = "mcp", specifier = ">=1.27.0" },
     { name = "pydantic", specifier = ">=2.10" },
