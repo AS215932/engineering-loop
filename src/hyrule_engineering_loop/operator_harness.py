@@ -10,6 +10,7 @@ from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
 
+from hyrule_engineering_loop.agent_core_trace import emit_published_trace
 from hyrule_engineering_loop.graph import build_graph
 from hyrule_engineering_loop.nodes import ALL_ROLES
 from hyrule_engineering_loop.pr import publish_promoted_worktrees
@@ -143,6 +144,7 @@ def run_operator_dry_run(
         "pr_results": pr_results,
         "pr_create_github": True,
     }
+    emit_published_trace(published_state, pr_results)
     _write_state(state_path, published_state)
 
     first_result = pr_results[0]
