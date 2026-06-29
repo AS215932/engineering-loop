@@ -435,6 +435,37 @@ def test_daemon_rejects_untrusted_reliability_decision_author(tmp_path: Path) ->
     assert report.detail == "latest Reliability Decision Record comment is not from a trusted author"
 
 
+def test_daemon_ignores_untrusted_reliability_decision_when_not_required(tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+    repo = "AS215932/engineering-loop"
+
+    def runner(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"final_state": {}, "state_path": str(tmp_path / "state.json")}
+
+    config = DaemonConfig(
+        repos=(repo,),
+        state_dir=tmp_path / "state",
+        output_root=tmp_path / "runs",
+    )
+    gh = FakeGh(
+        {
+            "issue list": _approved_issue_json(1, repo=repo, labels=["loop:approved"]),
+            "issue view": _issue_view_with_reliability_decision(
+                1,
+                repo=repo,
+                allowed_paths=["src/"],
+                author_login="drive-by-commenter",
+            ),
+        }
+    )
+
+    report = daemon_once(config, client=gh, feature_runner=runner)
+
+    assert report.outcome == "needs_triage"
+    assert captured["allowed_paths"] == ["docs"]
+
+
 def test_daemon_rejects_stale_reliability_decision_after_issue_edit(tmp_path: Path) -> None:
     repo = "AS215932/engineering-loop"
     config = DaemonConfig(

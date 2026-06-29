@@ -532,6 +532,8 @@ def _approved_allowed_paths(
     require_reliability_decision: bool,
     trusted_authors: tuple[str, ...],
 ) -> tuple[list[str] | None, str | None]:
+    if not require_reliability_decision and not trusted_authors:
+        return static_allowed_paths, None
     payload, payload_error = _latest_reliability_decision_payload(
         item,
         client=client,
