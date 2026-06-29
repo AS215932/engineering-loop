@@ -140,6 +140,11 @@ def test_decision_record_schema_validates_and_docs_runbook_auto_approves() -> No
     assert record.issue_text_hash
     assert record.next_loop == "engineering"
     assert record.handoff_contract == "github_issue_labels"
+    assert record.expected_paths == ["docs/", "README.md"]
+    assert record.allowed_paths == ["docs/", "README.md"]
+    assert "tests/" not in record.allowed_paths
+    assert ".github/" not in record.allowed_paths
+    assert "dashboards/" not in record.allowed_paths
     ReliabilityDecisionRecord.model_validate(record.model_dump(mode="json"))
 
 

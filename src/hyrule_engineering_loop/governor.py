@@ -610,7 +610,7 @@ def govern_issue(
         knowledge_authority_min=_knowledge_authority_min(knowledge_context),
     )
     labels_to_add, labels_to_remove = labels_for_decision(decision)
-    allowed_paths = capability.allowed_paths if capability is not None else []
+    allowed_paths = _decision_allowed_paths(classification, capability)
     forbidden_paths = capability.forbidden_paths if capability is not None else []
     required_checks = capability.required_checks if capability is not None else []
     next_loop = _next_loop_for_decision(
@@ -638,6 +638,9 @@ def govern_issue(
             "knowledge": knowledge.model_dump(mode="json"),
             "decision": decision,
             "capability": capability.model_dump(mode="json") if capability is not None else None,
+            "allowed_paths": allowed_paths,
+            "forbidden_paths": forbidden_paths,
+            "required_checks": required_checks,
             "denial_reasons": denial_reasons,
             "labels_to_add": labels_to_add,
             "labels_to_remove": labels_to_remove,
@@ -1262,6 +1265,23 @@ def _capability_denials(
     if capability.rollback_required and not classification.rollback_plan:
         denials.append("capability requires rollback plan")
     return denials
+
+
+def _decision_allowed_paths(
+    classification: IssueClassification,
+    capability: CapabilityEnvelope | None,
+) -> list[str]:
+    if capability is None:
+        return []
+    narrowed: list[str] = []
+    for path in classification.expected_paths:
+        if not _path_matches_any(path, capability.allowed_paths):
+            continue
+        if _path_matches_any(path, capability.forbidden_paths):
+            continue
+        if path not in narrowed:
+            narrowed.append(path)
+    return narrowed
 
 
 def _capability_source_loops(capability: CapabilityEnvelope) -> list[SourceLoop]:
