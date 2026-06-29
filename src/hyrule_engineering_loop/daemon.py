@@ -124,6 +124,7 @@ class DaemonConfig:
     knowledge_learning_dir: str | None = None
     lhp: LhpClientConfig | None = None
     require_reliability_decision: bool = False
+    reliability_decision_authors: tuple[str, ...] = ()
 
 
 @dataclass
@@ -385,6 +386,7 @@ def _latest_reliability_decision_payload(
     item: IntakeItem,
     *,
     client: GhClient,
+    trusted_authors: tuple[str, ...],
 ) -> tuple[dict[str, Any] | None, str | None]:
     try:
         comments = _issue_comments(item, client=client)
@@ -393,13 +395,21 @@ def _latest_reliability_decision_payload(
     except DaemonError as exc:
         return None, str(exc)
 
-    decision_comments = [
+    marker_comments = [
         comment
         for comment in comments
         if any(marker in str(comment.get("body", "")) for marker in RELIABILITY_DECISION_MARKERS)
     ]
-    if not decision_comments:
+    if not marker_comments:
         return None, None
+    trusted = set(trusted_authors)
+    if not trusted:
+        return None, "no trusted Reliability Decision Record authors configured"
+    decision_comments = [
+        comment for comment in marker_comments if _comment_author_login(comment) in trusted
+    ]
+    if not decision_comments:
+        return None, "latest Reliability Decision Record comment is not from a trusted author"
 
     decision_comments.sort(key=lambda comment: str(comment.get("createdAt", "")))
     body = str(decision_comments[-1].get("body", ""))
@@ -413,6 +423,16 @@ def _latest_reliability_decision_payload(
     if not isinstance(payload, dict):
         return None, "latest Reliability Decision Record payload is not an object"
     return payload, None
+
+
+def _comment_author_login(comment: dict[str, Any]) -> str:
+    author = comment.get("author")
+    if isinstance(author, dict):
+        return str(author.get("login") or "")
+    user = comment.get("user")
+    if isinstance(user, dict):
+        return str(user.get("login") or "")
+    return str(author or "")
 
 
 def _extract_json_code_block(body: str) -> str | None:
@@ -511,8 +531,13 @@ def _approved_allowed_paths(
     current_body: str,
     static_allowed_paths: list[str],
     require_reliability_decision: bool,
+    trusted_authors: tuple[str, ...],
 ) -> tuple[list[str] | None, str | None]:
-    payload, payload_error = _latest_reliability_decision_payload(item, client=client)
+    payload, payload_error = _latest_reliability_decision_payload(
+        item,
+        client=client,
+        trusted_authors=trusted_authors,
+    )
     if payload_error is not None:
         return None, payload_error
     if payload is None:
@@ -616,6 +641,7 @@ def daemon_once(
             current_body=body,
             static_allowed_paths=static_allowed_paths,
             require_reliability_decision=config.require_reliability_decision,
+            trusted_authors=config.reliability_decision_authors,
         )
         if approval_error is not None or effective_allowed_paths is None:
             return _finish(

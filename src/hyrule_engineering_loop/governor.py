@@ -596,7 +596,11 @@ def govern_issue(
     task_text = _authority_text(issue, lhp_payload)
     loader = knowledge_loader or _load_governor_knowledge
     knowledge = loader(task_text, knowledge_context)
-    classification = classify_issue_intent(issue, task_text=task_text, lhp_payload=lhp_payload)
+    classification = classify_issue_intent(
+        issue,
+        task_text=_classification_text(issue, lhp_payload),
+        lhp_payload=lhp_payload,
+    )
     decision, capability, denial_reasons, policy_rules = decide_policy(
         classification,
         registry=registry,
@@ -1143,6 +1147,18 @@ def _authority_text(issue: IssueSnapshot, lhp_payload: dict[str, Any] | None) ->
         "knowledge_artifacts": lhp_payload.get("knowledge_artifacts"),
     }
     return safe_text(json.dumps(selected, sort_keys=True, default=str), limit=7000)
+
+
+def _classification_text(issue: IssueSnapshot, lhp_payload: dict[str, Any] | None) -> str:
+    if lhp_payload is None:
+        return f"{issue.title}\n{issue.body}"[:7000]
+    selected = {
+        "handoff": lhp_payload.get("handoff"),
+        "case": lhp_payload.get("case"),
+        "verification_objectives": lhp_payload.get("verification_objectives"),
+        "knowledge_artifacts": lhp_payload.get("knowledge_artifacts"),
+    }
+    return json.dumps(selected, sort_keys=True, default=str)[:9000]
 
 
 def _eligible_for_governor(issue: IssueSnapshot) -> bool:

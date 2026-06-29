@@ -143,6 +143,31 @@ def test_decision_record_schema_validates_and_docs_runbook_auto_approves() -> No
     ReliabilityDecisionRecord.model_validate(record.model_dump(mode="json"))
 
 
+def test_secret_assignment_is_detected_before_redacted_context_storage() -> None:
+    issue = _issue(
+        title="Update docs example",
+        body="Document the example token=abc123. Verify docs after the change. Rollback by reverting.",
+    )
+
+    seen_task_text: list[str] = []
+
+    def knowledge_loader(task: str, __: Any) -> Any:
+        seen_task_text.append(task)
+        return summarize_knowledge_pack(CURRENT_PACK)
+
+    record = govern_issue(
+        issue,
+        registry=default_capability_registry(),
+        knowledge_loader=knowledge_loader,
+    )
+
+    assert record.routing_decision == "needs_human"
+    assert record.intent_type == "secret"
+    assert record.risk_tier == 4
+    assert any("secrets are not explicitly allowed" in reason for reason in record.denial_reasons)
+    assert "token=abc123" not in seen_task_text[0]
+
+
 def test_checked_in_capability_registry_validates() -> None:
     registry_path = Path(__file__).resolve().parents[1] / "configs" / "loop" / "capability-registry.yml"
     registry = load_capability_registry(registry_path)
@@ -182,6 +207,7 @@ def test_production_daemon_unit_allows_auto_approved_tier1_paths() -> None:
     service = service_path.read_text(encoding="utf-8")
 
     assert "--allow engineering-loop=monitoring" in service
+    assert "--reliability-decision-author Svaag" in service
     assert "--allow engineering-loop=.github" in service
     assert "--allow engineering-loop=README.md" in service
     assert "--allow engineering-loop=src" in service

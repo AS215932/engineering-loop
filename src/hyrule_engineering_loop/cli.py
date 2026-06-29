@@ -515,6 +515,7 @@ def daemon_command(args: argparse.Namespace) -> int:
             for repo, prefixes in _parse_repo_paths(args.allow, option="--allow").items()
         },
         require_reliability_decision=args.require_reliability_decision,
+        reliability_decision_authors=tuple(args.reliability_decision_author or ()),
         knowledge_context=_knowledge_context_config(args),
         knowledge_learning_dir=args.knowledge_learning_dir,
     )
@@ -947,6 +948,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--require-reliability-decision",
         action="store_true",
         help="fail closed unless the latest Reliability Decision Record authorizes loop:approved work",
+    )
+    daemon_parser.add_argument(
+        "--reliability-decision-author",
+        action="append",
+        metavar="LOGIN",
+        help="trusted GitHub login allowed to post Reliability Decision Records. Repeatable.",
     )
     daemon_parser.add_argument("--knowledge-context", action="store_true", help="include a read-only AS215932 knowledge context pack (default off)")
     daemon_parser.add_argument("--knowledge-context-fixture", help="load a context-pack JSON fixture instead of invoking knowledge")

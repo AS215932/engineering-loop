@@ -91,6 +91,7 @@ def _issue_view_with_reliability_decision(
     routing_decision: str = "allow_approved",
     current_body: str = "## Context\nAdd a docs note.\n",
     approved_body: str | None = None,
+    author_login: str = "trusted-governor",
 ) -> str:
     body_for_hash = approved_body if approved_body is not None else current_body
     payload = {
@@ -115,7 +116,13 @@ def _issue_view_with_reliability_decision(
     return json.dumps(
         {
             "body": current_body,
-            "comments": [{"body": comment, "createdAt": "2026-06-29T10:00:00Z"}],
+            "comments": [
+                {
+                    "author": {"login": author_login},
+                    "body": comment,
+                    "createdAt": "2026-06-29T10:00:00Z",
+                }
+            ],
         }
     )
 
@@ -242,6 +249,7 @@ def test_daemon_cli_per_run_budget_flags() -> None:
     assert default_args.max_iterations_per_run == DaemonConfig.max_iterations_per_run
     assert default_args.max_wall_clock_minutes_per_run == DaemonConfig.max_wall_clock_minutes_per_run
     assert default_args.require_reliability_decision is False
+    assert default_args.reliability_decision_author is None
     # Overridable for a one-off larger run.
     args = parser.parse_args(
         [
@@ -252,11 +260,14 @@ def test_daemon_cli_per_run_budget_flags() -> None:
             "--max-wall-clock-minutes-per-run",
             "90",
             "--require-reliability-decision",
+            "--reliability-decision-author",
+            "trusted-governor",
         ]
     )
     assert args.max_iterations_per_run == 40
     assert args.max_wall_clock_minutes_per_run == 90
     assert args.require_reliability_decision is True
+    assert args.reliability_decision_author == ["trusted-governor"]
 
 
 def test_daemon_defaults_to_core_repos_and_low_and_slow_budget() -> None:
@@ -266,6 +277,7 @@ def test_daemon_defaults_to_core_repos_and_low_and_slow_budget() -> None:
     assert config.max_cost_usd_per_day == 10.0
     assert config.allowed_paths == ("docs",)
     assert config.allowed_paths_by_repo == {}
+    assert config.reliability_decision_authors == ()
 
 
 def _capture_allowed_paths(tmp_path: Path, config_kwargs: dict[str, Any], repo: str = "AS215932/hyrule-cloud") -> dict[str, Any]:
@@ -328,6 +340,7 @@ def test_daemon_narrows_paths_to_reliability_decision_record(tmp_path: Path) -> 
             )
         },
         require_reliability_decision=True,
+        reliability_decision_authors=("trusted-governor",),
     )
     gh = FakeGh(
         {
@@ -353,6 +366,7 @@ def test_daemon_requires_reliability_decision_when_configured(tmp_path: Path) ->
         state_dir=tmp_path / "state",
         output_root=tmp_path / "runs",
         require_reliability_decision=True,
+        reliability_decision_authors=("trusted-governor",),
     )
     gh = FakeGh(
         {
@@ -374,6 +388,7 @@ def test_daemon_rejects_non_approved_reliability_decision(tmp_path: Path) -> Non
         state_dir=tmp_path / "state",
         output_root=tmp_path / "runs",
         require_reliability_decision=True,
+        reliability_decision_authors=("trusted-governor",),
     )
     gh = FakeGh(
         {
@@ -393,6 +408,33 @@ def test_daemon_rejects_non_approved_reliability_decision(tmp_path: Path) -> Non
     assert report.detail == "latest Reliability Decision Record is allow_candidate, not allow_approved"
 
 
+def test_daemon_rejects_untrusted_reliability_decision_author(tmp_path: Path) -> None:
+    repo = "AS215932/engineering-loop"
+    config = DaemonConfig(
+        repos=(repo,),
+        state_dir=tmp_path / "state",
+        output_root=tmp_path / "runs",
+        require_reliability_decision=True,
+        reliability_decision_authors=("trusted-governor",),
+    )
+    gh = FakeGh(
+        {
+            "issue list": _approved_issue_json(1, repo=repo, labels=["loop:approved"]),
+            "issue view": _issue_view_with_reliability_decision(
+                1,
+                repo=repo,
+                allowed_paths=["docs/"],
+                author_login="drive-by-commenter",
+            ),
+        }
+    )
+
+    report = daemon_once(config, client=gh, feature_runner=lambda **kwargs: pytest.fail("runner should not start"))
+
+    assert report.outcome == "needs_triage"
+    assert report.detail == "latest Reliability Decision Record comment is not from a trusted author"
+
+
 def test_daemon_rejects_stale_reliability_decision_after_issue_edit(tmp_path: Path) -> None:
     repo = "AS215932/engineering-loop"
     config = DaemonConfig(
@@ -400,6 +442,7 @@ def test_daemon_rejects_stale_reliability_decision_after_issue_edit(tmp_path: Pa
         state_dir=tmp_path / "state",
         output_root=tmp_path / "runs",
         require_reliability_decision=True,
+        reliability_decision_authors=("trusted-governor",),
     )
     gh = FakeGh(
         {

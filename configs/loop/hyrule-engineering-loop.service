@@ -36,6 +36,7 @@ ExecStart=/opt/engineering-loop/.venv/bin/hyrule-engineering-loop daemon --once 
     --repo AS215932/hyrule-network-proxy \
     --repo AS215932/as215932.net \
     --require-reliability-decision \
+    --reliability-decision-author Svaag \
     --workspace-root /var/lib/engineering-loop/workspace \
     --output-root /var/lib/engineering-loop/runs \
     --state-dir-path /var/lib/engineering-loop/state \
