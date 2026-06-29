@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+from hyrule_engineering_loop.agent_core_trace import emit_loop_trace
 from hyrule_engineering_loop.state import GraphState
 
 TRACE_FILENAME = "loop_trace.json"
@@ -344,6 +345,7 @@ def format_loop_trace_summary(trace: dict[str, Any]) -> str:
 
 def write_loop_trace(state: GraphState) -> str | None:
     """Write ``loop_trace.json`` beside the NOC handoff when configured."""
+    emit_loop_trace(state)
     output_dir = _resolve_trace_dir(state)
     if output_dir is None:
         return None
