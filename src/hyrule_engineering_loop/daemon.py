@@ -34,6 +34,7 @@ from hyrule_engineering_loop.lhp import LhpClientConfig, fetch_lhp_payload, pars
 from hyrule_engineering_loop.intake import (
     APPROVED_LABEL,
     GhClient,
+    IntakeError,
     IntakeItem,
     list_issues_with_label,
 )
@@ -56,6 +57,12 @@ CORE_REPOS: tuple[str, ...] = (
     "AS215932/hyrule-network-proxy",
     "AS215932/as215932.net",
 )
+
+RELIABILITY_DECISION_MARKERS: tuple[str, ...] = (
+    "reliability-governor-cdr:",
+    "loop-governor-cdr:",
+)
+RELIABILITY_DECISION_SCHEMA_VERSION = "reliability-governor.cdr.v1"
 
 REPO_CHECKOUT_NAMES: dict[str, str] = {
     "engineering-loop": "engineering-loop",
@@ -108,6 +115,7 @@ class DaemonConfig:
     knowledge_context: KnowledgeContextConfig | None = None
     knowledge_learning_dir: str | None = None
     lhp: LhpClientConfig | None = None
+    require_reliability_decision: bool = False
 
 
 @dataclass
@@ -138,6 +146,14 @@ class DaemonReport:
             "wall_clock_seconds": round(self.wall_clock_seconds, 1),
             "notifications": self.notifications,
         }
+
+
+@dataclass(frozen=True)
+class ReliabilityApprovalScope:
+    """Per-issue write scope authorized by a Reliability Decision Record."""
+
+    record_id: str
+    allowed_paths: tuple[str, ...]
 
 
 # --- lock ---------------------------------------------------------------
@@ -343,6 +359,158 @@ def _issue_body(item: IntakeItem, *, client: GhClient) -> str:
     return str(decoded.get("body", "")) if isinstance(decoded, dict) else ""
 
 
+def _issue_comments(item: IntakeItem, *, client: GhClient) -> list[dict[str, Any]]:
+    raw = client.run(
+        ["issue", "view", str(item.number), "--repo", item.repo, "--json", "comments"]
+    )
+    try:
+        decoded = json.loads(raw or "{}")
+    except json.JSONDecodeError as exc:
+        raise DaemonError("could not parse issue comments JSON") from exc
+    if not isinstance(decoded, dict):
+        return []
+    comments = decoded.get("comments", [])
+    return [comment for comment in comments if isinstance(comment, dict)]
+
+
+def _latest_reliability_decision_payload(
+    item: IntakeItem,
+    *,
+    client: GhClient,
+) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        comments = _issue_comments(item, client=client)
+    except IntakeError as exc:
+        return None, f"could not fetch Reliability Decision Record comments: {exc}"
+    except DaemonError as exc:
+        return None, str(exc)
+
+    decision_comments = [
+        comment
+        for comment in comments
+        if any(marker in str(comment.get("body", "")) for marker in RELIABILITY_DECISION_MARKERS)
+    ]
+    if not decision_comments:
+        return None, None
+
+    decision_comments.sort(key=lambda comment: str(comment.get("createdAt", "")))
+    body = str(decision_comments[-1].get("body", ""))
+    payload_text = _extract_json_code_block(body)
+    if payload_text is None:
+        return None, "latest Reliability Decision Record comment has no JSON payload"
+    try:
+        payload = json.loads(payload_text)
+    except json.JSONDecodeError as exc:
+        return None, f"latest Reliability Decision Record JSON is invalid: {exc.msg}"
+    if not isinstance(payload, dict):
+        return None, "latest Reliability Decision Record payload is not an object"
+    return payload, None
+
+
+def _extract_json_code_block(body: str) -> str | None:
+    fence = "```json"
+    start = body.find(fence)
+    if start < 0:
+        return None
+    payload_start = body.find("\n", start + len(fence))
+    if payload_start < 0:
+        return None
+    payload_start += 1
+    payload_end = body.find("```", payload_start)
+    if payload_end < 0:
+        return None
+    return body[payload_start:payload_end].strip()
+
+
+def _approval_scope_from_record(
+    item: IntakeItem,
+    payload: dict[str, Any],
+) -> tuple[ReliabilityApprovalScope | None, str | None]:
+    if payload.get("schema_version") != RELIABILITY_DECISION_SCHEMA_VERSION:
+        return None, "Reliability Decision Record schema version is unsupported"
+    try:
+        issue_number = int(payload.get("issue_number", -1))
+    except (TypeError, ValueError):
+        return None, "Reliability Decision Record issue_number is invalid"
+    if payload.get("repo") != item.repo or issue_number != item.number:
+        return None, "Reliability Decision Record does not match the approved issue"
+    if payload.get("routing_decision") != "allow_approved":
+        decision = str(payload.get("routing_decision", "unknown"))
+        return None, f"latest Reliability Decision Record is {decision}, not allow_approved"
+    raw_paths = payload.get("allowed_paths", [])
+    if not isinstance(raw_paths, list):
+        return None, "Reliability Decision Record allowed_paths is not a list"
+    allowed_paths = tuple(
+        normalized for path in raw_paths if (normalized := _normalize_path_prefix(str(path)))
+    )
+    if not allowed_paths:
+        return None, "Reliability Decision Record has no allowed paths"
+    return ReliabilityApprovalScope(
+        record_id=str(payload.get("record_id", "unknown")),
+        allowed_paths=allowed_paths,
+    ), None
+
+
+def _normalize_path_prefix(path: str) -> str:
+    normalized = path.strip()
+    if normalized.startswith("./"):
+        normalized = normalized[2:]
+    normalized = normalized.lstrip("/")
+    if normalized.endswith("/") and normalized != "/":
+        normalized = normalized.rstrip("/")
+    return normalized
+
+
+def _prefix_within(child: str, parent: str) -> bool:
+    child = _normalize_path_prefix(child)
+    parent = _normalize_path_prefix(parent)
+    return child == parent or child.startswith(f"{parent}/")
+
+
+def _intersect_allowed_paths(
+    static_allowed_paths: list[str],
+    approved_allowed_paths: tuple[str, ...],
+) -> list[str]:
+    narrowed: list[str] = []
+    for approved in approved_allowed_paths:
+        for static in static_allowed_paths:
+            if _prefix_within(approved, static):
+                candidate = _normalize_path_prefix(approved)
+            elif _prefix_within(static, approved):
+                candidate = _normalize_path_prefix(static)
+            else:
+                continue
+            if candidate and candidate not in narrowed:
+                narrowed.append(candidate)
+    return narrowed
+
+
+def _approved_allowed_paths(
+    item: IntakeItem,
+    *,
+    client: GhClient,
+    static_allowed_paths: list[str],
+    require_reliability_decision: bool,
+) -> tuple[list[str] | None, str | None]:
+    payload, payload_error = _latest_reliability_decision_payload(item, client=client)
+    if payload_error is not None:
+        return None, payload_error
+    if payload is None:
+        if require_reliability_decision:
+            return None, "approved issue has no Reliability Decision Record"
+        return static_allowed_paths, None
+
+    scope, scope_error = _approval_scope_from_record(item, payload)
+    if scope_error is not None:
+        return None, scope_error
+    assert scope is not None
+
+    narrowed = _intersect_allowed_paths(static_allowed_paths, scope.allowed_paths)
+    if not narrowed:
+        return None, f"Reliability Decision Record {scope.record_id} has no paths within daemon allowlist"
+    return narrowed, None
+
+
 def _change_id_for(item: IntakeItem) -> str:
     repo_slug = item.repo.rsplit("/", 1)[-1].upper().replace("-", "_")
     return f"ISSUE_{repo_slug}_{item.number}"
@@ -420,6 +588,25 @@ def daemon_once(
         change_class, risk = classify_issue(item)
         change_id = _change_id_for(item)
         body = _issue_body(item, client=client)
+        repo_name = repo_name_for_issue(item)
+        static_allowed_paths = list(config.allowed_paths_by_repo.get(repo_name, config.allowed_paths))
+        effective_allowed_paths, approval_error = _approved_allowed_paths(
+            item,
+            client=client,
+            static_allowed_paths=static_allowed_paths,
+            require_reliability_decision=config.require_reliability_decision,
+        )
+        if approval_error is not None or effective_allowed_paths is None:
+            return _finish(
+                DaemonReport(
+                    outcome="needs_triage",
+                    detail=(approval_error or "approved issue has no valid Reliability Decision Record")[:200],
+                    issue={"repo": item.repo, "number": item.number, "title": item.title},
+                    change_id=change_id,
+                ),
+                discord_poster,
+                icinga_poster,
+            )
         lhp_config = config.lhp or LhpClientConfig.from_env()
         lhp_pointer = parse_lhp_pointer(body)
         lhp_payload: dict[str, Any] | None = None
@@ -474,8 +661,6 @@ def daemon_once(
         request_path.write_text(request_text, encoding="utf-8")
 
         runner = feature_runner or run_feature_intake
-        repo_name = repo_name_for_issue(item)
-        effective_allowed_paths = list(config.allowed_paths_by_repo.get(repo_name, config.allowed_paths))
         result = runner(
             change_id=change_id,
             change_class=change_class,
