@@ -73,7 +73,8 @@ class FakeGh:
     def run(self, args: list[str]) -> str:
         self.calls.append(list(args))
         if args[:2] == ["issue", "list"]:
-            return json.dumps(self.issues)
+            repo = args[args.index("--repo") + 1]
+            return json.dumps([issue for issue in self.issues if issue.get("_repo", repo) == repo])
         return ""
 
 
@@ -151,7 +152,10 @@ def test_decision_record_schema_validates_and_docs_runbook_auto_approves() -> No
 def test_secret_assignment_is_detected_before_redacted_context_storage() -> None:
     issue = _issue(
         title="Update docs example",
-        body="Document the example token=abc123. Verify docs after the change. Rollback by reverting.",
+        body=(
+            "Document the example token=abc123 and api key sk_live_supersecret123. "
+            "Verify docs after the change. Rollback by reverting."
+        ),
     )
 
     seen_task_text: list[str] = []
@@ -171,6 +175,7 @@ def test_secret_assignment_is_detected_before_redacted_context_storage() -> None
     assert record.risk_tier == 4
     assert any("secrets are not explicitly allowed" in reason for reason in record.denial_reasons)
     assert "token=abc123" not in seen_task_text[0]
+    assert "sk_live_supersecret123" not in seen_task_text[0]
 
 
 def test_decision_record_issue_hash_covers_long_body_tail() -> None:
@@ -437,6 +442,46 @@ def test_unchanged_candidate_decision_is_not_reposted(tmp_path: Path) -> None:
     assert second.records[0].record_id == first.records[0].record_id
     assert len(comment_calls) == 1
     assert second.skipped == [f"{issue.issue_id}: unchanged decision {first.records[0].record_id}"]
+
+
+def test_unchanged_decisions_do_not_consume_governor_limit_across_repos(tmp_path: Path) -> None:
+    stable = _issue(
+        title="Update internal service helper",
+        body="Change the helper implementation. Verify by running a smoke check. Rollback by reverting.",
+        repo="AS215932/hyrule-cloud",
+        labels=[CANDIDATE_LABEL],
+    )
+    later = _issue(
+        title="Add missing docs runbook",
+        body="Document the runbook. Verify rendered docs.",
+        repo="AS215932/network-operations",
+    ).model_copy(
+        update={
+            "number": 43,
+            "url": "https://github.com/AS215932/network-operations/issues/43",
+        }
+    )
+    gh = FakeGh(
+        [
+            {**_issue_json(stable), "_repo": stable.repo},
+            {**_issue_json(later), "_repo": later.repo},
+        ]
+    )
+    config = ReliabilityGovernorConfig(
+        repos=(stable.repo, later.repo),
+        state_dir=tmp_path / "reliability-governor",
+        limit=1,
+        dry_run=False,
+    )
+
+    first = reliability_governor_once(config, client=gh, knowledge_loader=_knowledge)
+    second = reliability_governor_once(config, client=gh, knowledge_loader=_knowledge)
+
+    assert [record.issue_id for record in first.records] == [stable.issue_id]
+    assert second.skipped == [f"{stable.issue_id}: unchanged decision {first.records[0].record_id}"]
+    assert [record.issue_id for record in second.records] == [stable.issue_id, later.issue_id]
+    comment_calls = [call for call in gh.calls if call[:2] == ["issue", "comment"]]
+    assert len(comment_calls) == 2
 
 
 def test_candidate_record_id_changes_when_capability_envelope_changes() -> None:

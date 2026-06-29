@@ -508,7 +508,10 @@ def governor_once(
     registry = load_capability_registry(config.registry_path)
     report = GovernorReport(dry_run=config.dry_run)
     issues = list_governor_issues(list(config.repos), client=client)
-    for issue in issues[: config.limit]:
+    processed = 0
+    for issue in issues:
+        if processed >= config.limit:
+            break
         record = govern_issue(
             issue,
             registry=registry,
@@ -523,6 +526,8 @@ def governor_once(
             if path.exists():
                 if _labels_already_converged(issue, record):
                     report.skipped.append(f"{issue.issue_id}: unchanged decision {record.record_id}")
+                    report.records.append(record)
+                    continue
                 else:
                     apply_label_transition(issue, record, client=client)
             else:
@@ -531,6 +536,7 @@ def governor_once(
                 record.storage_path = str(path)
                 apply_label_transition(issue, record, client=client)
         report.records.append(record)
+        processed += 1
     return report
 
 

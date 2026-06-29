@@ -172,7 +172,18 @@ def payload_hash(value: Any) -> str:
 def safe_text(value: Any, *, limit: int = 1000) -> str:
     text = " ".join(str(value or "").split())
     text = re.sub(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", "[redacted]", text, flags=re.I)
-    text = re.sub(r"\b(password|passwd|secret|token|credential)\s*[:=]\s*[^\s,;]+", "[redacted]", text, flags=re.I)
+    text = re.sub(
+        r"\b(password|passwd|secret|token|credential|api[-_\s]?key|private[-_\s]?key)\s*[:=]\s*[^\s,;]+",
+        "[redacted]",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(
+        r"\b(api[-_\s]?key|private[-_\s]?key|token|credential)\s+[\"']?[A-Za-z0-9._~+/=-]{8,}",
+        "[redacted]",
+        text,
+        flags=re.I,
+    )
     text = "".join(" " if ch in "`<>[]{}" or ord(ch) < 32 else ch for ch in text)
     return (text or "—")[:limit]
 
