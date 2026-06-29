@@ -624,10 +624,11 @@ def govern_issue(
         {
             "schema": CDR_SCHEMA_VERSION,
             "issue": issue.issue_id,
+            "authority_text_hash": payload_hash(task_text),
             "classification": classification.model_dump(mode="json"),
             "knowledge": knowledge.model_dump(mode="json"),
             "decision": decision,
-            "capability": capability.id if capability is not None else None,
+            "capability": capability.model_dump(mode="json") if capability is not None else None,
             "denial_reasons": denial_reasons,
             "labels_to_add": labels_to_add,
             "labels_to_remove": labels_to_remove,
@@ -916,6 +917,8 @@ def _next_loop_for_decision(
         return "none"
     if decision == "needs_human":
         return "human"
+    if decision == "allow_candidate":
+        return "human"
     if decision == "knowledge_gap" or knowledge.status != "current":
         return "knowledge"
     if decision == "needs_context":
@@ -935,6 +938,8 @@ def _handoff_contract_for_decision(
     capability: CapabilityEnvelope | None,
     next_loop: NextLoop,
 ) -> str:
+    if decision == "allow_candidate":
+        return "human_review"
     if capability is not None:
         return capability.handoff_contract
     if next_loop == "noc":
@@ -1135,13 +1140,11 @@ def _authority_text(issue: IssueSnapshot, lhp_payload: dict[str, Any] | None) ->
 
 def _eligible_for_governor(issue: IssueSnapshot) -> bool:
     labels = set(issue.labels)
-    if APPROVED_LABEL in labels:
-        return False
     terminal = {NEEDS_CONTEXT_LABEL, KNOWLEDGE_GAP_LABEL, NEEDS_HUMAN_LABEL}
     if labels & terminal:
         return False
     loop_labels = {label for label in labels if label.startswith("loop:")}
-    return not loop_labels or INTAKE_LABEL in labels or CANDIDATE_LABEL in labels
+    return not loop_labels or INTAKE_LABEL in labels or CANDIDATE_LABEL in labels or APPROVED_LABEL in labels
 
 
 def _source_loop(issue: IssueSnapshot, *, lhp_payload: dict[str, Any] | None) -> SourceLoop:

@@ -360,9 +360,55 @@ def test_unchanged_candidate_decision_is_not_reposted(tmp_path: Path) -> None:
 
     comment_calls = [call for call in gh.calls if call[:2] == ["issue", "comment"]]
     assert first.records[0].routing_decision == "allow_candidate"
+    assert first.records[0].next_loop == "human"
+    assert first.records[0].handoff_contract == "human_review"
     assert second.records[0].record_id == first.records[0].record_id
     assert len(comment_calls) == 1
     assert second.skipped == [f"{issue.issue_id}: unchanged decision {first.records[0].record_id}"]
+
+
+def test_candidate_record_id_changes_when_capability_envelope_changes() -> None:
+    issue = _issue(
+        title="Update internal service helper",
+        body="Change the helper implementation. Verify by running a smoke check. Rollback by reverting.",
+        repo="AS215932/hyrule-cloud",
+        labels=[CANDIDATE_LABEL],
+    )
+    registry = default_capability_registry()
+    widened = default_capability_registry().model_copy(deep=True)
+    widened.capabilities[2].required_checks.append("extra-check")
+
+    original = govern_issue(issue, registry=registry, knowledge_loader=_knowledge)
+    changed = govern_issue(issue, registry=widened, knowledge_loader=_knowledge)
+
+    assert original.matched_capability == changed.matched_capability
+    assert original.record_id != changed.record_id
+
+
+def test_approved_issue_edit_is_reconciled_before_daemon_can_consume(tmp_path: Path) -> None:
+    issue = _issue(
+        title="Update docs runbook",
+        body="Update documentation and verify rendered docs.",
+        labels=[APPROVED_LABEL],
+    )
+    gh = FakeGh([_issue_json(issue)])
+    config = ReliabilityGovernorConfig(
+        repos=(issue.repo,),
+        state_dir=tmp_path / "reliability-governor",
+        dry_run=False,
+    )
+
+    initial = reliability_governor_once(config, client=gh, knowledge_loader=_knowledge)
+    gh.issues[0]["title"] = "Rotate API secret"
+    gh.issues[0]["body"] = "Update token credentials. Verify manually. Rollback by reverting."
+    gh.issues[0]["updatedAt"] = "2026-06-29T10:30:00Z"
+    updated = reliability_governor_once(config, client=gh, knowledge_loader=_knowledge)
+
+    assert initial.records[0].routing_decision == "allow_approved"
+    assert updated.records[0].routing_decision == "needs_human"
+    assert updated.records[0].record_id != initial.records[0].record_id
+    assert any("--remove-label" in call and APPROVED_LABEL in call for call in gh.calls)
+    assert any("--add-label" in call and NEEDS_HUMAN_LABEL in call for call in gh.calls)
 
 
 def _lhp_body() -> str:
