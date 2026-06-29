@@ -608,6 +608,51 @@ def test_noc_lhp_handoff_uses_caseservice_payload_and_auto_approves_low_risk() -
     assert APPROVED_LABEL in record.labels_to_add
 
 
+def test_lhp_payload_hash_is_part_of_record_identity() -> None:
+    issue = _issue(
+        title="[noc][lhp] disk handoff",
+        body=_lhp_body(),
+        labels=["engineering-handoff"],
+    )
+    first_payload = _lhp_payload()
+    changed_payload = {
+        **_lhp_payload(),
+        "knowledge_artifacts": [{"kind": "case-note", "id": "changed-without-classification-effect"}],
+    }
+
+    def requester(payload: dict[str, Any]) -> Any:
+        def inner(
+            method: str,
+            url: str,
+            headers: dict[str, str] | None,
+            data: bytes | None,
+        ) -> tuple[int, dict[str, Any]]:
+            return 200, payload
+
+        return inner
+
+    first = govern_issue(
+        issue,
+        registry=default_capability_registry(),
+        knowledge_loader=_knowledge,
+        lhp_config=LhpClientConfig(base_url="http://noc", secret="shared"),
+        lhp_requester=requester(first_payload),
+    )
+    changed = govern_issue(
+        issue,
+        registry=default_capability_registry(),
+        knowledge_loader=_knowledge,
+        lhp_config=LhpClientConfig(base_url="http://noc", secret="shared"),
+        lhp_requester=requester(changed_payload),
+    )
+
+    assert first.lhp is not None
+    assert changed.lhp is not None
+    assert first.lhp.payload_hash != changed.lhp.payload_hash
+    assert first.intent_type == changed.intent_type
+    assert first.record_id != changed.record_id
+
+
 def test_broken_lhp_fetch_routes_to_noc_context_without_starving_later_issues(tmp_path: Path) -> None:
     broken = _issue(
         title="[noc][lhp] broken disk handoff",

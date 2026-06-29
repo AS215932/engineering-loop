@@ -640,6 +640,7 @@ def govern_issue(
             "issue": issue.issue_id,
             "authority_text_hash": authority_text_hash,
             "issue_text_hash": issue_text_hash,
+            "lhp": lhp_summary.model_dump(mode="json") if lhp_summary is not None else None,
             "classification": classification.model_dump(mode="json"),
             "knowledge": knowledge.model_dump(mode="json"),
             "decision": decision,
