@@ -143,8 +143,12 @@ def test_production_daemon_unit_allows_auto_approved_tier1_paths() -> None:
     service = service_path.read_text(encoding="utf-8")
 
     assert "--allow engineering-loop=monitoring" in service
+    assert "--allow engineering-loop=src" in service
     assert "--allow hyrule-infra=alerts" in service
     assert "--allow hyrule-noc-agent=config" in service
+    assert "--allow hyrule-noc-agent=src" in service
+    assert "--allow hyrule-noc-agent=scripts" in service
+    assert "--allow hyrule-cloud=hyrule_cloud" in service
 
 
 def test_reliability_governor_cli_is_primary_and_governor_is_alias() -> None:

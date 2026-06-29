@@ -30,6 +30,7 @@ from hyrule_engineering_loop.intake import (
     APPROVED_LABEL,
     CANDIDATE_LABEL,
     GhCli,
+    LOOP_STATE_LABELS,
     ensure_labels,
     list_issues_with_label,
     mine_all_signals,
@@ -592,7 +593,9 @@ def intake_queue_command(args: argparse.Namespace) -> int:
 def intake_labels_command(args: argparse.Namespace) -> int:
     repos = args.repo or DEFAULT_INTAKE_REPOS
     if not args.apply:
-        print(f"would create {CANDIDATE_LABEL} and {APPROVED_LABEL} in: {', '.join(repos)}")
+        labels = ", ".join(label for label, _, _ in LOOP_STATE_LABELS)
+        print(f"would create loop protocol labels in: {', '.join(repos)}")
+        print(f"labels: {labels}")
         print("re-run with --apply to create them")
         return 0
     created = ensure_labels(repos, client=GhCli())

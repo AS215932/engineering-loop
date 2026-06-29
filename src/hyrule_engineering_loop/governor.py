@@ -18,7 +18,14 @@ from typing import Any, Callable, Literal, TypeAlias
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
-from hyrule_engineering_loop.intake import APPROVED_LABEL, CANDIDATE_LABEL, GhClient
+from hyrule_engineering_loop.intake import (
+    APPROVED_LABEL,
+    CANDIDATE_LABEL,
+    KNOWLEDGE_GAP_LABEL,
+    NEEDS_CONTEXT_LABEL,
+    NEEDS_HUMAN_LABEL,
+    GhClient,
+)
 from hyrule_engineering_loop.knowledge_context import (
     KnowledgeContextConfig,
     load_knowledge_context,
@@ -33,9 +40,6 @@ from hyrule_engineering_loop.lhp import (
 )
 
 INTAKE_LABEL = "loop:intake"
-NEEDS_CONTEXT_LABEL = "loop:needs-context"
-KNOWLEDGE_GAP_LABEL = "loop:knowledge-gap"
-NEEDS_HUMAN_LABEL = "loop:needs-human"
 DECISION_MARKER = "reliability-governor-cdr:"
 LEGACY_DECISION_MARKER = "loop-governor-cdr:"
 CDR_SCHEMA_VERSION = "reliability-governor.cdr.v1"
