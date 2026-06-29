@@ -8,6 +8,7 @@ dependencies = [
     "mcp>=1.27.0",
     "pydantic>=2.10",
     "pyyaml>=6.0",
+    "agent-core",
 ]
 
 [project.scripts]
@@ -33,3 +34,6 @@ testpaths = ["tests"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
+
+[tool.uv.sources]
+agent-core = { git = "https://github.com/AS215932/agent-core", tag = "v0.1.0" }
