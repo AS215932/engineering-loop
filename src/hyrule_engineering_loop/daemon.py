@@ -4,8 +4,8 @@ Phase F of the v2 architecture (``docs/engineering-loop/v2-architecture.md``
 §9). ``daemon_once`` runs one cycle: acquire the run lock, check the per-day
 budget ledger, pick exactly one ``loop:approved`` issue (highest triage
 score), run the full graph, and either publish a **draft PR** (clean run —
-the human pre-authorized the work by applying the label; merge stays
-human-gated) or leave a journaled failure for triage. Every cycle reports a
+the work was pre-authorized through `loop:approved`; merge stays human-gated)
+or leave a journaled failure for triage. Every cycle reports a
 one-line summary to Discord and a passive check result to Icinga, then
 exits.
 
@@ -509,7 +509,7 @@ def daemon_once(
         if result.get("signoff_status") == "ready_for_review" and final_state.get(
             "promotion_results"
         ):
-            # The human pre-authorized this work by applying loop:approved;
+            # The work was pre-authorized by loop:approved;
             # publication still ends at a DRAFT PR — merge stays human.
             publish_state = {
                 **final_state,

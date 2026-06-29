@@ -116,7 +116,8 @@ Acceptance criteria:
 1. Miners are read-only: no mutating MCP/gh calls outside issue creation.
 2. A signal already represented by an open issue files nothing.
 3. Candidate issues carry Context / Action items / Related sections and the
-   `loop:candidate` label; nothing self-promotes to `loop:approved`.
+   `loop:candidate` label; intake never self-promotes to `loop:approved`.
+   Reliability Governor or a human must authorize approval.
 4. `daemon --once` (phase F dependency) only consumes `loop:approved`.
 
 ## F — Operations lane

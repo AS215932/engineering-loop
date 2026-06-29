@@ -1,0 +1,54 @@
+# /etc/systemd/system/hyrule-reliability-governor.service
+# Deploy to: the same dedicated `loop` VM as the Engineering Loop daemon.
+#
+# Oneshot, timer-driven: one pass scans unlabeled / loop:intake /
+# loop:candidate issues, fetches authoritative LHP-v1 payloads from NOC
+# CaseService when present, loads Knowledge context, posts a Reliability
+# Decision Record, and only then applies deterministic routing labels.
+
+[Unit]
+Description=AS215932 Reliability Governor issue-routing pass
+After=network-online.target
+Wants=network-online.target
+# Production routing authority belongs on the dedicated loop VM, not CI.
+ConditionEnvironment=!GITHUB_ACTIONS
+
+[Service]
+Type=oneshot
+User=loop
+Group=loop
+WorkingDirectory=/opt/engineering-loop
+EnvironmentFile=/opt/engineering-loop/.env
+# .env provides the loop's GH token for `gh`,
+# ENGINEERING_LOOP_NOC_LHP_BASE_URL, ENGINEERING_LOOP_NOC_LHP_SECRET,
+# and optional Knowledge MCP overrides.
+ExecStart=/opt/engineering-loop/.venv/bin/hyrule-engineering-loop reliability-governor --once \
+    --repo AS215932/engineering-loop \
+    --repo AS215932/network-operations \
+    --repo AS215932/hyrule-cloud \
+    --repo AS215932/hyrule-web \
+    --repo AS215932/hyrule-mcp \
+    --repo AS215932/noc-agent \
+    --repo AS215932/hyrule-network-proxy \
+    --repo AS215932/as215932.net \
+    --registry /opt/engineering-loop/configs/loop/capability-registry.yml \
+    --state-dir-path /var/lib/engineering-loop/reliability-governor \
+    --knowledge-context \
+    --knowledge-mcp-url http://127.0.0.1:8767/mcp \
+    --knowledge-mcp-transport streamable-http
+TimeoutStartSec=600
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=reliability-governor
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/engineering-loop /var/lib/engineering-loop
+
+[Install]
+WantedBy=multi-user.target

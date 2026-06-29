@@ -4,9 +4,9 @@ Label protocol (v2 architecture §8):
 
 - ``loop:candidate`` — machine-proposed work awaiting human triage. The
   only label this package ever applies.
-- ``loop:approved`` — human-blessed work, eligible for autonomous runs
-  (consumed by the Phase F operations lane). **Nothing here can apply it**;
-  a human relabels candidates after review.
+- ``loop:approved`` — Reliability-Governor-or-human-approved work, eligible
+  for autonomous runs (consumed by the Phase F operations lane). **Nothing here
+  can apply it**; intake only files candidates.
 
 All GitHub access goes through the ``gh`` CLI behind a small client
 protocol so tests run fully offline against a fake.

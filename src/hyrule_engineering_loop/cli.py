@@ -21,6 +21,10 @@ from hyrule_engineering_loop.feature import (
 )
 from hyrule_engineering_loop.agent_core_trace import emit_published_trace
 from hyrule_engineering_loop.graph import build_graph
+from hyrule_engineering_loop.governor import (
+    ReliabilityGovernorConfig,
+    reliability_governor_once,
+)
 from hyrule_engineering_loop.knowledge_context import KnowledgeContextConfig
 from hyrule_engineering_loop.intake import (
     APPROVED_LABEL,
@@ -31,6 +35,7 @@ from hyrule_engineering_loop.intake import (
     mine_all_signals,
     signals_to_candidates,
 )
+from hyrule_engineering_loop.lhp import LhpClientConfig
 from hyrule_engineering_loop.memory import list_memory
 from hyrule_engineering_loop.model_policy import (
     model_policy_snapshot,
@@ -516,6 +521,28 @@ def daemon_command(args: argparse.Namespace) -> int:
     return 0 if report.outcome not in {"error", "refused_ci"} else 1
 
 
+def governor_command(args: argparse.Namespace) -> int:
+    """Run one Reliability Governor issue-routing pass."""
+    if not args.once:
+        command = getattr(args, "command", "reliability-governor")
+        print(f"[CLI] {command} currently supports only --once (timer-driven scheduling)")
+        return 2
+    config = ReliabilityGovernorConfig(
+        repos=tuple(args.repo) if args.repo else tuple(DEFAULT_INTAKE_REPOS),
+        state_dir=Path(args.state_dir_path).expanduser()
+        if args.state_dir_path
+        else ReliabilityGovernorConfig.state_dir,
+        registry_path=Path(args.registry).expanduser() if args.registry else None,
+        knowledge_context=_knowledge_context_config(args),
+        lhp=LhpClientConfig.from_env(),
+        limit=args.limit,
+        dry_run=args.dry_run,
+    )
+    report = reliability_governor_once(config, client=GhCli())
+    print(json.dumps(report.as_dict(), indent=2, sort_keys=True))
+    return 0
+
+
 def intake_scan_command(args: argparse.Namespace) -> int:
     client = GhCli()
     signals, skipped = mine_all_signals(repo=args.repo, client=client)
@@ -700,6 +727,32 @@ def evals_run_command(args: argparse.Namespace) -> int:
     if args.strict and summary.failed:
         return 1
     return 0
+
+
+def _add_reliability_governor_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+    name: str,
+    *,
+    help_text: str,
+) -> None:
+    parser = subparsers.add_parser(name, help=help_text)
+    parser.add_argument("--once", action="store_true", required=True)
+    parser.add_argument("--repo", action="append")
+    parser.add_argument("--limit", type=int, default=ReliabilityGovernorConfig.limit)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--state-dir-path", dest="state_dir_path")
+    parser.add_argument("--registry", help="capability registry YAML/JSON")
+    parser.add_argument("--knowledge-context", action="store_true", help="include a read-only AS215932 knowledge context pack")
+    parser.add_argument("--knowledge-context-fixture", help="load a context-pack JSON fixture instead of invoking knowledge")
+    parser.add_argument("--knowledge-repo", default="../knowledge")
+    parser.add_argument("--knowledge-mcp-url", help="load context through a read-only knowledge MCP HTTP/SSE endpoint")
+    parser.add_argument("--knowledge-mcp-transport", default="streamable-http", choices=["streamable-http", "http", "sse"])
+    parser.add_argument("--knowledge-context-role", default="engineering_loop_reliability_governor")
+    parser.add_argument("--knowledge-context-risk", default="low")
+    parser.add_argument("--knowledge-context-budget", type=int, default=6000)
+    parser.add_argument("--knowledge-context-authority-min", default="A1")
+    parser.add_argument("--knowledge-context-timeout", type=int, default=20)
+    parser.set_defaults(func=governor_command)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -898,6 +951,17 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_parser.add_argument("--knowledge-context-timeout", type=int, default=20)
     daemon_parser.add_argument("--knowledge-learning-dir", help="write a sanitized local learning-event artifact (default off)")
     daemon_parser.set_defaults(func=daemon_command)
+
+    _add_reliability_governor_parser(
+        subparsers,
+        "reliability-governor",
+        help_text="route intake/candidate issues through Reliability Governor policy",
+    )
+    _add_reliability_governor_parser(
+        subparsers,
+        "governor",
+        help_text="deprecated alias for reliability-governor",
+    )
 
     intake_parser = subparsers.add_parser("intake", help="signal mining and triage inbox")
     intake_subparsers = intake_parser.add_subparsers(dest="intake_command", required=True)

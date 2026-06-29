@@ -2,7 +2,8 @@
 
 The triage inbox is the GitHub issue tracker itself, gated by labels:
 ``loop:candidate`` is machine-proposed work awaiting human triage;
-``loop:approved`` is human-blessed work eligible for autonomous runs.
+``loop:approved`` is Reliability-Governor-or-human-approved work eligible for
+autonomous runs.
 Signal miners are read-only and emit candidate issues — never direct runs —
 and nothing in this package can apply ``loop:approved``.
 """
