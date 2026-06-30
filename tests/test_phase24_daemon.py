@@ -328,6 +328,12 @@ def test_daemon_allowed_paths_default_is_docs_only(tmp_path: Path) -> None:
     assert captured["allowed_paths"] == ["docs"]
 
 
+def test_daemon_maps_hyperliquid_repo_to_checkout(tmp_path: Path) -> None:
+    captured = _capture_allowed_paths(tmp_path, {}, repo="Svaag/hyperliquid-trading-agent")
+    assert captured["repo_name"] == "hyperliquid-trading-agent"
+    assert captured["allowed_paths"] == ["docs"]
+
+
 def test_daemon_allowed_paths_per_repo_override(tmp_path: Path) -> None:
     captured = _capture_allowed_paths(
         tmp_path, {"allowed_paths_by_repo": {"hyrule-cloud": ("hyrule_cloud", "tests", "docs")}}

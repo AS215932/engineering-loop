@@ -116,9 +116,10 @@ reconciler; the later callback-driven shape uses normalized wake events that
 trigger reconciliation, never direct approval. See
 `docs/engineering-loop/reliability-governor-production.md`.
 
-The daemon's default production scope is the eight core repos:
+The daemon's default production scope is the core repos:
 `engineering-loop`, `network-operations`, `hyrule-cloud`, `hyrule-web`,
-`hyrule-mcp`, `noc-agent`, `hyrule-network-proxy`, and `as215932.net`. It runs low-and-slow by
+`hyrule-mcp`, `noc-agent`, `hyrule-network-proxy`, `as215932.net`, and
+`hyperliquid-trading-agent`. It runs low-and-slow by
 default: at most 2 runs/day, $10/day, and docs-only mutation boundaries unless
 a later reviewed PR widens them.
 

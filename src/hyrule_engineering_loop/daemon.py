@@ -63,6 +63,7 @@ CORE_REPOS: tuple[str, ...] = (
     "AS215932/noc-agent",
     "AS215932/hyrule-network-proxy",
     "AS215932/as215932.net",
+    "Svaag/hyperliquid-trading-agent",
 )
 
 RELIABILITY_DECISION_MARKERS: tuple[str, ...] = (
@@ -80,6 +81,7 @@ REPO_CHECKOUT_NAMES: dict[str, str] = {
     "hyrule-mcp": "hyrule-mcp",
     "hyrule-network-proxy": "hyrule-network-proxy",
     "as215932.net": "as215932.net",
+    "hyperliquid-trading-agent": "hyperliquid-trading-agent",
 }
 
 LABEL_CHANGE_CLASSES: dict[str, ChangeClass] = {

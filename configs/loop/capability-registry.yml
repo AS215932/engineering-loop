@@ -95,6 +95,7 @@ capabilities:
       - AS215932/hyrule-mcp
       - AS215932/noc-agent
       - AS215932/engineering-loop
+      - Svaag/hyperliquid-trading-agent
     allowed_paths:
       - docs/
       - tests/
@@ -103,6 +104,9 @@ capabilities:
       - src/
       - app/
       - scripts/
+      - hyperliquid_trading_agent/
+      - alembic/
+      - .env.example
     forbidden_paths:
       - secrets/
       - "**/secrets/"

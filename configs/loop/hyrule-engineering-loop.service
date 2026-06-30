@@ -35,6 +35,7 @@ ExecStart=/opt/engineering-loop/.venv/bin/hyrule-engineering-loop daemon --once 
     --repo AS215932/noc-agent \
     --repo AS215932/hyrule-network-proxy \
     --repo AS215932/as215932.net \
+    --repo Svaag/hyperliquid-trading-agent \
     --require-reliability-decision \
     --reliability-decision-author Svaag \
     --workspace-root /var/lib/engineering-loop/workspace \
@@ -110,6 +111,13 @@ ExecStart=/opt/engineering-loop/.venv/bin/hyrule-engineering-loop daemon --once 
     --allow as215932.net=.github \
     --allow as215932.net=README.md \
     --allow as215932.net=dashboards \
+    --allow hyperliquid-trading-agent=docs \
+    --allow hyperliquid-trading-agent=tests \
+    --allow hyperliquid-trading-agent=.github \
+    --allow hyperliquid-trading-agent=README.md \
+    --allow hyperliquid-trading-agent=hyperliquid_trading_agent \
+    --allow hyperliquid-trading-agent=alembic \
+    --allow hyperliquid-trading-agent=.env.example \
     --max-runs-per-day 2 \
     --max-cost-usd-per-day 10
 # A run never blocks the next timer fire indefinitely; the daemon enforces
