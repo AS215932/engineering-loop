@@ -887,9 +887,10 @@ Phase 23 (v2 Phase E) adds intake and the label-gated triage inbox:
 
 - the inbox is the GitHub issue tracker, gated by two labels:
   `loop:candidate` (machine-proposed, awaiting human triage) and
-  `loop:approved` (human-blessed, eligible for autonomous runs — the only
-  thing the Phase F operations lane will consume). **Nothing in the loop
-  can apply `loop:approved`**; a human relabels after review;
+  `loop:approved` (eligible for autonomous runs — the only thing the Phase F
+  operations lane will consume). Intake miners cannot apply `loop:approved`;
+  Phase 29's Reliability Governor may apply it only after posting a
+  Reliability Decision Record and passing deterministic capability policy;
 - `src/hyrule_engineering_loop/intake/` holds the heartbeat:
   `github_issues.py` (org-repo scan, deterministic scoring by label
   weights + age + body completeness, fingerprint dedupe, candidate filing
@@ -906,14 +907,34 @@ Phase 23 (v2 Phase E) adds intake and the label-gated triage inbox:
   explicit operator action, never implicit); `/loop triage` in Pi shows
   the queue.
 
+Phase 29 adds the Reliability Governor:
+
+- product role: **Staff Site Reliability Engineer, Autonomous Operations**;
+- loop job titles: Engineering Loop is the Platform/Software Engineer, NOC Loop
+  is the NOC Engineer / SRE on-call, Knowledge Loop is the Knowledge Engineer,
+  and Reliability Governor is the Staff SRE control plane;
+- it reads unlabeled, `loop:intake`, and `loop:candidate` issues, including
+  NOC LHP-v1 handoff pointers;
+- it treats GitHub prose as untrusted for NOC work and fetches the
+  authoritative handoff payload from CaseService;
+- it loads authority-tiered Hyrule Knowledge context and denies stale,
+  contradictory, or missing context;
+- it emits a Reliability Decision Record as both a GitHub comment and local JSON
+  before applying any label transition;
+- it routes to `loop:needs-context`, `loop:knowledge-gap`, `loop:needs-human`,
+  `loop:candidate`, or `loop:approved` from deterministic policy.
+- production v1 is a timer-driven reconciler; future callbacks are normalized
+  wake events that cause a fresh reconciliation against GitHub, CaseService,
+  Knowledge, and CI before any routing decision.
+
 Phase 24 (v2 Phase F) adds the operations lane — scheduled, budgeted,
 one-item-at-a-time autonomy that still ends at a draft PR:
 
 - `hyrule-engineering-loop daemon --once` runs one cycle: acquire the run
   lock, check the per-day budget ledger, pick the highest-scored
   `loop:approved` issue, run the full graph, and either publish a **draft
-  PR** (clean run — the human pre-authorized the work by applying the
-  label; merge stays human-gated) or leave a journaled failure for triage,
+  PR** (clean run — the work was pre-authorized through `loop:approved`;
+  merge stays human-gated) or leave a journaled failure for triage,
   then exit;
 - safety rails (`src/hyrule_engineering_loop/daemon.py`): a pid run lock
   with stale-lock detection (one cycle at a time); per-run budgets

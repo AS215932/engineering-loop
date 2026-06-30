@@ -34,10 +34,82 @@ ExecStart=/opt/engineering-loop/.venv/bin/hyrule-engineering-loop daemon --once 
     --repo AS215932/hyrule-mcp \
     --repo AS215932/noc-agent \
     --repo AS215932/hyrule-network-proxy \
+    --repo AS215932/as215932.net \
+    --require-reliability-decision \
+    --reliability-decision-author Svaag \
     --workspace-root /var/lib/engineering-loop/workspace \
     --output-root /var/lib/engineering-loop/runs \
     --state-dir-path /var/lib/engineering-loop/state \
     --memory-dir /var/lib/engineering-loop/workspace/hyrule-infra/memory \
+    --allow engineering-loop=docs \
+    --allow engineering-loop=tests \
+    --allow engineering-loop=.github \
+    --allow engineering-loop=README.md \
+    --allow engineering-loop=dashboards \
+    --allow engineering-loop=monitoring \
+    --allow engineering-loop=alerts \
+    --allow engineering-loop=config \
+    --allow engineering-loop=app/knowledge \
+    --allow engineering-loop=src \
+    --allow engineering-loop=scripts \
+    --allow engineering-loop=app \
+    --allow hyrule-infra=docs \
+    --allow hyrule-infra=tests \
+    --allow hyrule-infra=.github \
+    --allow hyrule-infra=README.md \
+    --allow hyrule-infra=dashboards \
+    --allow hyrule-infra=monitoring \
+    --allow hyrule-infra=alerts \
+    --allow hyrule-infra=config \
+    --allow hyrule-infra=app/knowledge \
+    --allow hyrule-noc-agent=docs \
+    --allow hyrule-noc-agent=tests \
+    --allow hyrule-noc-agent=.github \
+    --allow hyrule-noc-agent=README.md \
+    --allow hyrule-noc-agent=dashboards \
+    --allow hyrule-noc-agent=monitoring \
+    --allow hyrule-noc-agent=alerts \
+    --allow hyrule-noc-agent=config \
+    --allow hyrule-noc-agent=app/knowledge \
+    --allow hyrule-noc-agent=src \
+    --allow hyrule-noc-agent=scripts \
+    --allow hyrule-noc-agent=app \
+    --allow hyrule-cloud=docs \
+    --allow hyrule-cloud=tests \
+    --allow hyrule-cloud=.github \
+    --allow hyrule-cloud=README.md \
+    --allow hyrule-cloud=dashboards \
+    --allow hyrule-cloud=hyrule_cloud \
+    --allow hyrule-cloud=src \
+    --allow hyrule-cloud=scripts \
+    --allow hyrule-cloud=app \
+    --allow hyrule-web=docs \
+    --allow hyrule-web=tests \
+    --allow hyrule-web=.github \
+    --allow hyrule-web=README.md \
+    --allow hyrule-web=dashboards \
+    --allow hyrule-web=hyrule_web \
+    --allow hyrule-web=src \
+    --allow hyrule-web=scripts \
+    --allow hyrule-web=app \
+    --allow hyrule-mcp=docs \
+    --allow hyrule-mcp=tests \
+    --allow hyrule-mcp=.github \
+    --allow hyrule-mcp=README.md \
+    --allow hyrule-mcp=dashboards \
+    --allow hyrule-mcp=src \
+    --allow hyrule-mcp=scripts \
+    --allow hyrule-mcp=app \
+    --allow hyrule-network-proxy=docs \
+    --allow hyrule-network-proxy=tests \
+    --allow hyrule-network-proxy=.github \
+    --allow hyrule-network-proxy=README.md \
+    --allow hyrule-network-proxy=dashboards \
+    --allow as215932.net=docs \
+    --allow as215932.net=tests \
+    --allow as215932.net=.github \
+    --allow as215932.net=README.md \
+    --allow as215932.net=dashboards \
     --max-runs-per-day 2 \
     --max-cost-usd-per-day 10
 # A run never blocks the next timer fire indefinitely; the daemon enforces

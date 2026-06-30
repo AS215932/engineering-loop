@@ -32,7 +32,8 @@ production.
 - `docs/agent-loops/`, `docs/agentic-development-loop.md`,
   `docs/engineering-loop/` — role cards, runtime reference, and v2 design.
 - `integrations/pi/` — the Pi `/loop` extension.
-- `configs/loop/` — systemd service + timer for the operations lane.
+- `configs/loop/` — systemd service + timer config and the Reliability Governor
+  capability registry.
 - `model-policy.yml`, `engineering-loop-policy.yml` — model/backend routing
   and the mutation/publication policy guards.
 - Optional AS215932 knowledge context-pack integration is default-off and read-only.
@@ -49,6 +50,11 @@ uvx ruff check src tests
 
 ```bash
 uv run hyrule-engineering-loop --help
+# route intake/candidate issues through deterministic Reliability Governor policy:
+uv run hyrule-engineering-loop reliability-governor --once \
+  --registry configs/loop/capability-registry.yml \
+  --knowledge-context \
+  --knowledge-repo /home/svag/Dev/knowledge
 # one operations-lane cycle over the core AS215932 loop:approved queues:
 uv run hyrule-engineering-loop daemon --once
 ```
@@ -100,6 +106,15 @@ uv run hyrule-engineering-loop feature CHANGE_ID \
   --knowledge-context \
   --knowledge-learning-dir .engineering-loop-state/learning-events
 ```
+
+The Reliability Governor is the Staff SRE control plane for autonomous
+operations. It posts a Reliability Decision Record before it changes labels. It
+can route issues to `loop:needs-context`, `loop:knowledge-gap`,
+`loop:needs-human`, `loop:candidate`, or `loop:approved`; the Engineering daemon
+still consumes only `loop:approved`. Production v1 runs it as a timer-driven
+reconciler; the later callback-driven shape uses normalized wake events that
+trigger reconciliation, never direct approval. See
+`docs/engineering-loop/reliability-governor-production.md`.
 
 The daemon's default production scope is the eight core repos:
 `engineering-loop`, `network-operations`, `hyrule-cloud`, `hyrule-web`,

@@ -4,8 +4,8 @@ Phase F of the v2 architecture (``docs/engineering-loop/v2-architecture.md``
 §9). ``daemon_once`` runs one cycle: acquire the run lock, check the per-day
 budget ledger, pick exactly one ``loop:approved`` issue (highest triage
 score), run the full graph, and either publish a **draft PR** (clean run —
-the human pre-authorized the work by applying the label; merge stays
-human-gated) or leave a journaled failure for triage. Every cycle reports a
+the work was pre-authorized through `loop:approved`; merge stays human-gated)
+or leave a journaled failure for triage. Every cycle reports a
 one-line summary to Discord and a passive check result to Icinga, then
 exits.
 
@@ -30,10 +30,18 @@ from typing import Any, Callable, TypeAlias
 from hyrule_engineering_loop.agent_core_trace import emit_published_trace
 from hyrule_engineering_loop.feature import run_feature_intake
 from hyrule_engineering_loop.knowledge_context import KnowledgeContextConfig
-from hyrule_engineering_loop.lhp import LhpClientConfig, fetch_lhp_payload, parse_lhp_pointer, post_lhp_update, render_lhp_request
+from hyrule_engineering_loop.lhp import (
+    LhpClientConfig,
+    fetch_lhp_payload,
+    parse_lhp_pointer,
+    payload_hash,
+    post_lhp_update,
+    render_lhp_request,
+)
 from hyrule_engineering_loop.intake import (
     APPROVED_LABEL,
     GhClient,
+    IntakeError,
     IntakeItem,
     list_issues_with_label,
 )
@@ -56,6 +64,12 @@ CORE_REPOS: tuple[str, ...] = (
     "AS215932/hyrule-network-proxy",
     "AS215932/as215932.net",
 )
+
+RELIABILITY_DECISION_MARKERS: tuple[str, ...] = (
+    "reliability-governor-cdr:",
+    "loop-governor-cdr:",
+)
+RELIABILITY_DECISION_SCHEMA_VERSION = "reliability-governor.cdr.v1"
 
 REPO_CHECKOUT_NAMES: dict[str, str] = {
     "engineering-loop": "engineering-loop",
@@ -108,6 +122,8 @@ class DaemonConfig:
     knowledge_context: KnowledgeContextConfig | None = None
     knowledge_learning_dir: str | None = None
     lhp: LhpClientConfig | None = None
+    require_reliability_decision: bool = False
+    reliability_decision_authors: tuple[str, ...] = ()
 
 
 @dataclass
@@ -138,6 +154,15 @@ class DaemonReport:
             "wall_clock_seconds": round(self.wall_clock_seconds, 1),
             "notifications": self.notifications,
         }
+
+
+@dataclass(frozen=True)
+class ReliabilityApprovalScope:
+    """Per-issue write scope authorized by a Reliability Decision Record."""
+
+    record_id: str
+    allowed_paths: tuple[str, ...]
+    lhp_payload_hash: str | None = None
 
 
 # --- lock ---------------------------------------------------------------
@@ -343,6 +368,224 @@ def _issue_body(item: IntakeItem, *, client: GhClient) -> str:
     return str(decoded.get("body", "")) if isinstance(decoded, dict) else ""
 
 
+def _issue_comments(item: IntakeItem, *, client: GhClient) -> list[dict[str, Any]]:
+    raw = client.run(
+        ["issue", "view", str(item.number), "--repo", item.repo, "--json", "comments"]
+    )
+    try:
+        decoded = json.loads(raw or "{}")
+    except json.JSONDecodeError as exc:
+        raise DaemonError("could not parse issue comments JSON") from exc
+    if not isinstance(decoded, dict):
+        return []
+    comments = decoded.get("comments", [])
+    return [comment for comment in comments if isinstance(comment, dict)]
+
+
+def _latest_reliability_decision_payload(
+    item: IntakeItem,
+    *,
+    client: GhClient,
+    trusted_authors: tuple[str, ...],
+) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        comments = _issue_comments(item, client=client)
+    except IntakeError as exc:
+        return None, f"could not fetch Reliability Decision Record comments: {exc}"
+    except DaemonError as exc:
+        return None, str(exc)
+
+    marker_comments = [
+        comment
+        for comment in comments
+        if any(marker in str(comment.get("body", "")) for marker in RELIABILITY_DECISION_MARKERS)
+    ]
+    if not marker_comments:
+        return None, None
+    trusted = set(trusted_authors)
+    if not trusted:
+        return None, "no trusted Reliability Decision Record authors configured"
+    decision_comments = [
+        comment for comment in marker_comments if _comment_author_login(comment) in trusted
+    ]
+    if not decision_comments:
+        return None, "latest Reliability Decision Record comment is not from a trusted author"
+
+    decision_comments.sort(key=lambda comment: str(comment.get("createdAt", "")))
+    body = str(decision_comments[-1].get("body", ""))
+    payload_text = _extract_json_code_block(body)
+    if payload_text is None:
+        return None, "latest Reliability Decision Record comment has no JSON payload"
+    try:
+        payload = json.loads(payload_text)
+    except json.JSONDecodeError as exc:
+        return None, f"latest Reliability Decision Record JSON is invalid: {exc.msg}"
+    if not isinstance(payload, dict):
+        return None, "latest Reliability Decision Record payload is not an object"
+    return payload, None
+
+
+def _comment_author_login(comment: dict[str, Any]) -> str:
+    author = comment.get("author")
+    if isinstance(author, dict):
+        return str(author.get("login") or "")
+    user = comment.get("user")
+    if isinstance(user, dict):
+        return str(user.get("login") or "")
+    return str(author or "")
+
+
+def _extract_json_code_block(body: str) -> str | None:
+    fence = "```json"
+    start = body.find(fence)
+    if start < 0:
+        return None
+    payload_start = body.find("\n", start + len(fence))
+    if payload_start < 0:
+        return None
+    payload_start += 1
+    payload_end = body.find("```", payload_start)
+    if payload_end < 0:
+        return None
+    return body[payload_start:payload_end].strip()
+
+
+def _approval_scope_from_record(
+    item: IntakeItem,
+    payload: dict[str, Any],
+    *,
+    current_body: str,
+) -> tuple[ReliabilityApprovalScope | None, str | None]:
+    if payload.get("schema_version") != RELIABILITY_DECISION_SCHEMA_VERSION:
+        return None, "Reliability Decision Record schema version is unsupported"
+    try:
+        issue_number = int(payload.get("issue_number", -1))
+    except (TypeError, ValueError):
+        return None, "Reliability Decision Record issue_number is invalid"
+    if payload.get("repo") != item.repo or issue_number != item.number:
+        return None, "Reliability Decision Record does not match the approved issue"
+    expected_issue_hash = payload.get("issue_text_hash")
+    if not isinstance(expected_issue_hash, str) or not expected_issue_hash:
+        return None, "Reliability Decision Record does not include issue_text_hash"
+    if expected_issue_hash != _issue_text_hash(item.title, current_body):
+        return None, "Reliability Decision Record is stale for the current issue title/body"
+    if payload.get("routing_decision") != "allow_approved":
+        decision = str(payload.get("routing_decision", "unknown"))
+        return None, f"latest Reliability Decision Record is {decision}, not allow_approved"
+    raw_paths = payload.get("allowed_paths", [])
+    if not isinstance(raw_paths, list):
+        return None, "Reliability Decision Record allowed_paths is not a list"
+    allowed_paths = tuple(
+        normalized for path in raw_paths if (normalized := _normalize_path_prefix(str(path)))
+    )
+    if not allowed_paths:
+        return None, "Reliability Decision Record has no allowed paths"
+    return ReliabilityApprovalScope(
+        record_id=str(payload.get("record_id", "unknown")),
+        allowed_paths=allowed_paths,
+        lhp_payload_hash=_record_lhp_payload_hash(payload),
+    ), None
+
+
+def _record_lhp_payload_hash(payload: dict[str, Any]) -> str | None:
+    lhp = payload.get("lhp")
+    if not isinstance(lhp, dict):
+        return None
+    value = str(lhp.get("payload_hash") or "").strip().lower()
+    if len(value) < 12:
+        return None
+    if any(ch not in "0123456789abcdef" for ch in value):
+        return None
+    return value
+
+
+def _normalize_path_prefix(path: str) -> str:
+    normalized = path.strip()
+    if normalized.startswith("./"):
+        normalized = normalized[2:]
+    normalized = normalized.lstrip("/")
+    if normalized.endswith("/") and normalized != "/":
+        normalized = normalized.rstrip("/")
+    return normalized
+
+
+def _issue_text_hash(title: str, body: str) -> str:
+    return payload_hash({"title": title, "body": body})
+
+
+def _prefix_within(child: str, parent: str) -> bool:
+    child = _normalize_path_prefix(child)
+    parent = _normalize_path_prefix(parent)
+    return child == parent or child.startswith(f"{parent}/")
+
+
+def _intersect_allowed_paths(
+    static_allowed_paths: list[str],
+    approved_allowed_paths: tuple[str, ...],
+) -> list[str]:
+    narrowed: list[str] = []
+    for approved in approved_allowed_paths:
+        for static in static_allowed_paths:
+            if _prefix_within(approved, static):
+                candidate = _normalize_path_prefix(approved)
+            elif _prefix_within(static, approved):
+                candidate = _normalize_path_prefix(static)
+            else:
+                continue
+            if candidate and candidate not in narrowed:
+                narrowed.append(candidate)
+    return narrowed
+
+
+def _approved_allowed_paths(
+    item: IntakeItem,
+    *,
+    client: GhClient,
+    current_body: str,
+    static_allowed_paths: list[str],
+    require_reliability_decision: bool,
+    trusted_authors: tuple[str, ...],
+) -> tuple[list[str] | None, ReliabilityApprovalScope | None, str | None]:
+    if not require_reliability_decision and not trusted_authors:
+        return static_allowed_paths, None, None
+    payload, payload_error = _latest_reliability_decision_payload(
+        item,
+        client=client,
+        trusted_authors=trusted_authors,
+    )
+    if payload_error is not None:
+        return None, None, payload_error
+    if payload is None:
+        if require_reliability_decision:
+            return None, None, "approved issue has no Reliability Decision Record"
+        return static_allowed_paths, None, None
+
+    scope, scope_error = _approval_scope_from_record(item, payload, current_body=current_body)
+    if scope_error is not None:
+        return None, None, scope_error
+    assert scope is not None
+
+    narrowed = _intersect_allowed_paths(static_allowed_paths, scope.allowed_paths)
+    if not narrowed:
+        return None, None, f"Reliability Decision Record {scope.record_id} has no paths within daemon allowlist"
+    return narrowed, scope, None
+
+
+def _lhp_payload_hash_error(
+    payload: dict[str, Any],
+    scope: ReliabilityApprovalScope | None,
+) -> str | None:
+    if scope is None:
+        return None
+    expected = scope.lhp_payload_hash
+    if expected is None:
+        return f"Reliability Decision Record {scope.record_id} has no LHP payload hash"
+    current = payload_hash(payload)
+    if current[: len(expected)] != expected:
+        return f"Reliability Decision Record {scope.record_id} LHP payload hash is stale"
+    return None
+
+
 def _change_id_for(item: IntakeItem) -> str:
     repo_slug = item.repo.rsplit("/", 1)[-1].upper().replace("-", "_")
     return f"ISSUE_{repo_slug}_{item.number}"
@@ -420,6 +663,27 @@ def daemon_once(
         change_class, risk = classify_issue(item)
         change_id = _change_id_for(item)
         body = _issue_body(item, client=client)
+        repo_name = repo_name_for_issue(item)
+        static_allowed_paths = list(config.allowed_paths_by_repo.get(repo_name, config.allowed_paths))
+        effective_allowed_paths, approval_scope, approval_error = _approved_allowed_paths(
+            item,
+            client=client,
+            current_body=body,
+            static_allowed_paths=static_allowed_paths,
+            require_reliability_decision=config.require_reliability_decision,
+            trusted_authors=config.reliability_decision_authors,
+        )
+        if approval_error is not None or effective_allowed_paths is None:
+            return _finish(
+                DaemonReport(
+                    outcome="needs_triage",
+                    detail=(approval_error or "approved issue has no valid Reliability Decision Record")[:200],
+                    issue={"repo": item.repo, "number": item.number, "title": item.title},
+                    change_id=change_id,
+                ),
+                discord_poster,
+                icinga_poster,
+            )
         lhp_config = config.lhp or LhpClientConfig.from_env()
         lhp_pointer = parse_lhp_pointer(body)
         lhp_payload: dict[str, Any] | None = None
@@ -451,6 +715,25 @@ def daemon_once(
                     discord_poster,
                     icinga_poster,
                 )
+            lhp_hash_error = _lhp_payload_hash_error(lhp_payload, approval_scope)
+            if lhp_hash_error is not None:
+                post_lhp_update(
+                    lhp_pointer,
+                    lhp_config,
+                    update_type="blocked",
+                    status="blocked",
+                    summary=lhp_hash_error,
+                )
+                return _finish(
+                    DaemonReport(
+                        outcome="needs_triage",
+                        detail=lhp_hash_error[:200],
+                        issue={"repo": item.repo, "number": item.number, "title": item.title},
+                        change_id=change_id,
+                    ),
+                    discord_poster,
+                    icinga_poster,
+                )
             post_lhp_update(
                 lhp_pointer,
                 lhp_config,
@@ -474,8 +757,6 @@ def daemon_once(
         request_path.write_text(request_text, encoding="utf-8")
 
         runner = feature_runner or run_feature_intake
-        repo_name = repo_name_for_issue(item)
-        effective_allowed_paths = list(config.allowed_paths_by_repo.get(repo_name, config.allowed_paths))
         result = runner(
             change_id=change_id,
             change_class=change_class,
@@ -509,7 +790,7 @@ def daemon_once(
         if result.get("signoff_status") == "ready_for_review" and final_state.get(
             "promotion_results"
         ):
-            # The human pre-authorized this work by applying loop:approved;
+            # The work was pre-authorized by loop:approved;
             # publication still ends at a DRAFT PR — merge stays human.
             publish_state = {
                 **final_state,

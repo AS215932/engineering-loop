@@ -152,6 +152,7 @@ async def _read_mcp_context_pack_async(task: str, config: KnowledgeContextConfig
                     "role": config.role,
                     "risk_level": config.risk_level,
                     "budget_tokens": config.budget_tokens,
+                    "authority_min": config.authority_min,
                 },
             )
     return _mcp_tool_result_to_dict(result)

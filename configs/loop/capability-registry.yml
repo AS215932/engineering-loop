@@ -1,0 +1,132 @@
+version: 1
+capabilities:
+  - id: tier0.docs-runbooks-tests
+    domains:
+      - docs
+      - runbook
+      - tests
+      - dashboard
+    allowed_repos:
+      - "*"
+    allowed_paths:
+      - docs/
+      - README.md
+      - tests/
+      - .github/
+      - dashboards/
+    forbidden_paths:
+      - secrets/
+      - "**/secrets/"
+      - .env
+      - .env.
+    target_loops:
+      - engineering
+    source_loops:
+      - human
+      - noc
+      - knowledge
+      - scheduled_miner
+    max_risk_tier: 0
+    auto_approve_max_risk_tier: 0
+    required_evidence:
+      - knowledge_context
+      - verification_method
+    required_checks:
+      - targeted_tests_or_docs_review
+    rollback_required: true
+    verification_required: true
+    handoff_contract: github_issue_labels
+    verification_owner: engineering
+    learning_required: false
+    success_count: 0
+    failure_count: 0
+
+  - id: tier1.monitoring-alert-tuning
+    domains:
+      - monitoring
+      - alert_tuning
+    allowed_repos:
+      - AS215932/network-operations
+      - AS215932/noc-agent
+      - AS215932/engineering-loop
+    allowed_paths:
+      - docs/
+      - tests/
+      - monitoring/
+      - alerts/
+      - config/
+      - app/knowledge/
+    forbidden_paths:
+      - secrets/
+      - "**/secrets/"
+      - .env
+      - .env.
+    target_loops:
+      - engineering
+    source_loops:
+      - human
+      - noc
+      - knowledge
+      - scheduled_miner
+    max_risk_tier: 1
+    auto_approve_max_risk_tier: 1
+    required_evidence:
+      - knowledge_context
+      - verification_method
+      - rollback_plan
+    required_checks:
+      - targeted_tests_or_alert_fixture
+    rollback_required: true
+    verification_required: true
+    handoff_contract: github_issue_labels
+    verification_owner: noc
+    learning_required: true
+    success_count: 0
+    failure_count: 0
+
+  - id: tier2.internal-service-low-risk
+    domains:
+      - internal_service_code
+      - provisioning_helper
+      - non_prod_tooling
+    allowed_repos:
+      - AS215932/hyrule-cloud
+      - AS215932/hyrule-web
+      - AS215932/hyrule-mcp
+      - AS215932/noc-agent
+      - AS215932/engineering-loop
+    allowed_paths:
+      - docs/
+      - tests/
+      - hyrule_cloud/
+      - hyrule_web/
+      - src/
+      - app/
+      - scripts/
+    forbidden_paths:
+      - secrets/
+      - "**/secrets/"
+      - .env
+      - .env.
+    target_loops:
+      - engineering
+    source_loops:
+      - human
+      - noc
+      - knowledge
+      - scheduled_miner
+    max_risk_tier: 2
+    auto_approve_max_risk_tier: 2
+    required_evidence:
+      - knowledge_context
+      - verification_method
+      - rollback_plan
+    required_checks:
+      - pytest
+    rollback_required: true
+    verification_required: true
+    handoff_contract: github_issue_labels
+    verification_owner: engineering
+    learning_required: true
+    success_count: 0
+    failure_count: 0

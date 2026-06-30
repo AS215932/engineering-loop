@@ -9,6 +9,9 @@ import pytest
 from hyrule_engineering_loop.intake import (
     APPROVED_LABEL,
     CANDIDATE_LABEL,
+    KNOWLEDGE_GAP_LABEL,
+    NEEDS_CONTEXT_LABEL,
+    NEEDS_HUMAN_LABEL,
     Signal,
     ensure_labels,
     file_candidate_issue,
@@ -188,6 +191,9 @@ def test_ensure_labels_is_an_explicit_operator_action() -> None:
     assert created == [
         f"AS215932/network-operations:{CANDIDATE_LABEL}",
         f"AS215932/network-operations:{APPROVED_LABEL}",
+        f"AS215932/network-operations:{NEEDS_CONTEXT_LABEL}",
+        f"AS215932/network-operations:{KNOWLEDGE_GAP_LABEL}",
+        f"AS215932/network-operations:{NEEDS_HUMAN_LABEL}",
     ]
     # Label creation goes through `gh label create` only when invoked
     # explicitly — the miners themselves never call it (covered above).

@@ -4,9 +4,11 @@ Label protocol (v2 architecture §8):
 
 - ``loop:candidate`` — machine-proposed work awaiting human triage. The
   only label this package ever applies.
-- ``loop:approved`` — human-blessed work, eligible for autonomous runs
-  (consumed by the Phase F operations lane). **Nothing here can apply it**;
-  a human relabels candidates after review.
+- ``loop:approved`` — Reliability-Governor-or-human-approved work, eligible
+  for autonomous runs (consumed by the Phase F operations lane). **Nothing here
+  can apply it**; intake only files candidates.
+- ``loop:needs-context``, ``loop:knowledge-gap``, and ``loop:needs-human`` —
+  terminal routing labels applied by the Reliability Governor.
 
 All GitHub access goes through the ``gh`` CLI behind a small client
 protocol so tests run fully offline against a fake.
@@ -23,6 +25,16 @@ from typing import Any, Protocol
 
 CANDIDATE_LABEL = "loop:candidate"
 APPROVED_LABEL = "loop:approved"
+NEEDS_CONTEXT_LABEL = "loop:needs-context"
+KNOWLEDGE_GAP_LABEL = "loop:knowledge-gap"
+NEEDS_HUMAN_LABEL = "loop:needs-human"
+LOOP_STATE_LABELS: tuple[tuple[str, str, str], ...] = (
+    (CANDIDATE_LABEL, "fbca04", "Machine-proposed work awaiting human triage"),
+    (APPROVED_LABEL, "0e8a16", "Reliability-Governor-or-human-approved autonomous work"),
+    (NEEDS_CONTEXT_LABEL, "d4c5f9", "Reliability Governor needs more authoritative context"),
+    (KNOWLEDGE_GAP_LABEL, "f9d0c4", "Knowledge context is missing, stale, or contradictory"),
+    (NEEDS_HUMAN_LABEL, "d73a4a", "Human review required before autonomous routing"),
+)
 
 FINGERPRINT_MARKER = "loop-fingerprint:"
 
@@ -262,13 +274,10 @@ def file_candidate_issue(
 
 
 def ensure_labels(repos: list[str], *, client: GhClient) -> list[str]:
-    """Create the two protocol labels (explicit operator action, idempotent)."""
+    """Create the loop protocol labels (explicit operator action, idempotent)."""
     created: list[str] = []
     for repo in repos:
-        for label, color, description in (
-            (CANDIDATE_LABEL, "fbca04", "Machine-proposed work awaiting human triage"),
-            (APPROVED_LABEL, "0e8a16", "Human-approved; eligible for autonomous loop runs"),
-        ):
+        for label, color, description in LOOP_STATE_LABELS:
             client.run(
                 [
                     "label",

@@ -57,7 +57,7 @@ INTAKE (the heartbeat)
   /loop <prompt> (Pi)            GitHub issues: loop:approved
   signal miners (Icinga/Prometheus/drift/nightly CI, read-only) ──> triage
         triage = scored candidates filed as issues labeled loop:candidate
-        a human relabels loop:candidate -> loop:approved
+        Reliability Governor / human relabels loop:candidate -> loop:approved
             |
             v
 PLAN  planner + role plan-consults
@@ -258,7 +258,7 @@ depending on any one CLI's native skill mechanism. v1's
 
 ### 8. Intake and triage — the heartbeat
 
-New `src/hyrule_engineering_loop/intake/`:
+New `src/hyrule_engineering_loop/intake/` and Reliability Governor:
 
 - `github_issues.py` — scans org repos for actionable work. Queue
   convention is labels: `loop:candidate` (machine-proposed, awaiting human
@@ -269,9 +269,18 @@ New `src/hyrule_engineering_loop/intake/`:
   hyrule-mcp), nightly `drift-detection` artifacts, and `netops-nightly`
   failures. Miners emit *candidate issues*, never direct runs, and dedupe
   against open issues before filing. NetFlow joins later as another miner.
+- `governor.py` — the Reliability Governor, the Staff SRE control plane between
+  issue creation, NOC LHP-v1 handoffs, Knowledge context, and Engineering
+  execution. It fetches authoritative CaseService payloads for NOC handoffs,
+  loads authority-tiered Knowledge context, writes/posts a Reliability Decision
+  Record, and only then applies deterministic policy labels. Production v1 runs
+  as a timer-driven `--once` reconciler; the callback-driven future is a
+  transport-neutral wake-event contract where callbacks trigger reconciliation
+  but never directly authorize work.
 
 The triage inbox is therefore the GitHub issue tracker itself — reviewable
 from anywhere, durable, and already monitored by humans.
+The daemon never consumes raw candidates; it consumes only `loop:approved`.
 
 ### 9. Operations lane — long-running mode
 

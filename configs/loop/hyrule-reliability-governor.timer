@@ -1,0 +1,17 @@
+# /etc/systemd/system/hyrule-reliability-governor.timer
+# Deploy to: the same dedicated `loop` VM as the Reliability Governor service.
+#
+# The Reliability Governor should run ahead of the hourly Engineering daemon so
+# newly approved low-risk work is visible by the next daemon cycle.
+
+[Unit]
+Description=Schedule the AS215932 Reliability Governor issue-routing pass
+
+[Timer]
+OnCalendar=*:0/15
+RandomizedDelaySec=120
+Persistent=true
+Unit=hyrule-reliability-governor.service
+
+[Install]
+WantedBy=timers.target

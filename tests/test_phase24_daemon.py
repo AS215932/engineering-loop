@@ -23,6 +23,7 @@ from hyrule_engineering_loop.daemon import (
 )
 from hyrule_engineering_loop.cli import build_parser
 from hyrule_engineering_loop.intake import IntakeItem
+from hyrule_engineering_loop.lhp import LhpClientConfig, payload_hash
 from hyrule_engineering_loop.nodes import STALL_ROUND_LIMIT, delegate_implementation_node
 from hyrule_engineering_loop.promotion import rollback_promotions, setup_worktrees_for_state
 from hyrule_engineering_loop.state import GraphState
@@ -80,6 +81,79 @@ def _approved_issue_json(number: int, *, repo: str, labels: list[str]) -> str:
             }
         ]
     )
+
+
+def _issue_view_with_reliability_decision(
+    number: int,
+    *,
+    repo: str,
+    allowed_paths: list[str],
+    routing_decision: str = "allow_approved",
+    current_body: str = "## Context\nAdd a docs note.\n",
+    approved_body: str | None = None,
+    author_login: str = "trusted-governor",
+    lhp_payload_hash: str | None = None,
+) -> str:
+    body_for_hash = approved_body if approved_body is not None else current_body
+    payload = {
+        "schema_version": "reliability-governor.cdr.v1",
+        "record_id": "record-1",
+        "repo": repo,
+        "issue_number": number,
+        "issue_text_hash": payload_hash({"title": "Add a docs note", "body": body_for_hash}),
+        "routing_decision": routing_decision,
+        "allowed_paths": allowed_paths,
+    }
+    if lhp_payload_hash is not None:
+        payload["lhp"] = {
+            "handoff_id": "handoff-1",
+            "case_id": "case-1",
+            "payload_hash": lhp_payload_hash,
+        }
+    comment = "\n".join(
+        [
+            "<!-- reliability-governor-cdr:record-1 -->",
+            "## Reliability Governor Decision",
+            "",
+            "```json",
+            json.dumps(payload, sort_keys=True),
+            "```",
+        ]
+    )
+    return json.dumps(
+        {
+            "body": current_body,
+            "comments": [
+                {
+                    "author": {"login": author_login},
+                    "body": comment,
+                    "createdAt": "2026-06-29T10:00:00Z",
+                }
+            ],
+        }
+    )
+
+
+def _lhp_body() -> str:
+    return """
+## LHP-v1 authoritative input
+```json
+{"schema_version":"lhp.v1","handoff_id":"handoff-1","case_id":"case-1","fetch_path":"/loop-handoff/v1/engineering/handoffs/handoff-1"}
+```
+"""
+
+
+def _lhp_payload(objective: str) -> dict[str, Any]:
+    return {
+        "schema_version": "lhp.v1",
+        "handoff": {
+            "handoff_id": "handoff-1",
+            "case_id": "case-1",
+            "objective": objective,
+        },
+        "case": {"case_id": "case-1"},
+        "verification_objectives": [],
+    }
 
 
 # --- AC1: run lock ----------------------------------------------------------
@@ -203,12 +277,26 @@ def test_daemon_cli_per_run_budget_flags() -> None:
     default_args = parser.parse_args(["daemon", "--once"])
     assert default_args.max_iterations_per_run == DaemonConfig.max_iterations_per_run
     assert default_args.max_wall_clock_minutes_per_run == DaemonConfig.max_wall_clock_minutes_per_run
+    assert default_args.require_reliability_decision is False
+    assert default_args.reliability_decision_author is None
     # Overridable for a one-off larger run.
     args = parser.parse_args(
-        ["daemon", "--once", "--max-iterations-per-run", "40", "--max-wall-clock-minutes-per-run", "90"]
+        [
+            "daemon",
+            "--once",
+            "--max-iterations-per-run",
+            "40",
+            "--max-wall-clock-minutes-per-run",
+            "90",
+            "--require-reliability-decision",
+            "--reliability-decision-author",
+            "trusted-governor",
+        ]
     )
     assert args.max_iterations_per_run == 40
     assert args.max_wall_clock_minutes_per_run == 90
+    assert args.require_reliability_decision is True
+    assert args.reliability_decision_author == ["trusted-governor"]
 
 
 def test_daemon_defaults_to_core_repos_and_low_and_slow_budget() -> None:
@@ -218,6 +306,7 @@ def test_daemon_defaults_to_core_repos_and_low_and_slow_budget() -> None:
     assert config.max_cost_usd_per_day == 10.0
     assert config.allowed_paths == ("docs",)
     assert config.allowed_paths_by_repo == {}
+    assert config.reliability_decision_authors == ()
 
 
 def _capture_allowed_paths(tmp_path: Path, config_kwargs: dict[str, Any], repo: str = "AS215932/hyrule-cloud") -> dict[str, Any]:
@@ -254,6 +343,256 @@ def test_daemon_allowed_paths_unlisted_repo_falls_back_to_docs(tmp_path: Path) -
         repo="AS215932/hyrule-cloud",
     )
     assert captured["allowed_paths"] == ["docs"]
+
+
+def test_daemon_narrows_paths_to_reliability_decision_record(tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+    repo = "AS215932/engineering-loop"
+
+    def runner(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"final_state": {}, "state_path": str(tmp_path / "state.json")}
+
+    config = DaemonConfig(
+        repos=(repo,),
+        state_dir=tmp_path / "state",
+        output_root=tmp_path / "runs",
+        allowed_paths_by_repo={
+            "engineering-loop": (
+                "docs",
+                "tests",
+                ".github",
+                "README.md",
+                "src",
+                "scripts",
+                "app",
+            )
+        },
+        require_reliability_decision=True,
+        reliability_decision_authors=("trusted-governor",),
+    )
+    gh = FakeGh(
+        {
+            "issue list": _approved_issue_json(1, repo=repo, labels=["loop:approved"]),
+            "issue view": _issue_view_with_reliability_decision(
+                1,
+                repo=repo,
+                allowed_paths=["docs/", "README.md", "tests/", ".github/"],
+            ),
+        }
+    )
+
+    report = daemon_once(config, client=gh, feature_runner=runner)
+
+    assert report.outcome == "needs_triage"
+    assert captured["allowed_paths"] == ["docs", "README.md", "tests", ".github"]
+
+
+def test_daemon_requires_reliability_decision_when_configured(tmp_path: Path) -> None:
+    repo = "AS215932/engineering-loop"
+    config = DaemonConfig(
+        repos=(repo,),
+        state_dir=tmp_path / "state",
+        output_root=tmp_path / "runs",
+        require_reliability_decision=True,
+        reliability_decision_authors=("trusted-governor",),
+    )
+    gh = FakeGh(
+        {
+            "issue list": _approved_issue_json(1, repo=repo, labels=["loop:approved"]),
+            "issue view": json.dumps({"body": "## Context\nx\n", "comments": []}),
+        }
+    )
+
+    report = daemon_once(config, client=gh, feature_runner=lambda **kwargs: pytest.fail("runner should not start"))
+
+    assert report.outcome == "needs_triage"
+    assert report.detail == "approved issue has no Reliability Decision Record"
+
+
+def test_daemon_rejects_non_approved_reliability_decision(tmp_path: Path) -> None:
+    repo = "AS215932/engineering-loop"
+    config = DaemonConfig(
+        repos=(repo,),
+        state_dir=tmp_path / "state",
+        output_root=tmp_path / "runs",
+        require_reliability_decision=True,
+        reliability_decision_authors=("trusted-governor",),
+    )
+    gh = FakeGh(
+        {
+            "issue list": _approved_issue_json(1, repo=repo, labels=["loop:approved"]),
+            "issue view": _issue_view_with_reliability_decision(
+                1,
+                repo=repo,
+                allowed_paths=["docs/"],
+                routing_decision="allow_candidate",
+            ),
+        }
+    )
+
+    report = daemon_once(config, client=gh, feature_runner=lambda **kwargs: pytest.fail("runner should not start"))
+
+    assert report.outcome == "needs_triage"
+    assert report.detail == "latest Reliability Decision Record is allow_candidate, not allow_approved"
+
+
+def test_daemon_rejects_untrusted_reliability_decision_author(tmp_path: Path) -> None:
+    repo = "AS215932/engineering-loop"
+    config = DaemonConfig(
+        repos=(repo,),
+        state_dir=tmp_path / "state",
+        output_root=tmp_path / "runs",
+        require_reliability_decision=True,
+        reliability_decision_authors=("trusted-governor",),
+    )
+    gh = FakeGh(
+        {
+            "issue list": _approved_issue_json(1, repo=repo, labels=["loop:approved"]),
+            "issue view": _issue_view_with_reliability_decision(
+                1,
+                repo=repo,
+                allowed_paths=["docs/"],
+                author_login="drive-by-commenter",
+            ),
+        }
+    )
+
+    report = daemon_once(config, client=gh, feature_runner=lambda **kwargs: pytest.fail("runner should not start"))
+
+    assert report.outcome == "needs_triage"
+    assert report.detail == "latest Reliability Decision Record comment is not from a trusted author"
+
+
+def test_daemon_ignores_untrusted_reliability_decision_when_not_required(tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+    repo = "AS215932/engineering-loop"
+
+    def runner(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"final_state": {}, "state_path": str(tmp_path / "state.json")}
+
+    config = DaemonConfig(
+        repos=(repo,),
+        state_dir=tmp_path / "state",
+        output_root=tmp_path / "runs",
+    )
+    gh = FakeGh(
+        {
+            "issue list": _approved_issue_json(1, repo=repo, labels=["loop:approved"]),
+            "issue view": _issue_view_with_reliability_decision(
+                1,
+                repo=repo,
+                allowed_paths=["src/"],
+                author_login="drive-by-commenter",
+            ),
+        }
+    )
+
+    report = daemon_once(config, client=gh, feature_runner=runner)
+
+    assert report.outcome == "needs_triage"
+    assert captured["allowed_paths"] == ["docs"]
+
+
+def test_daemon_rejects_stale_reliability_decision_after_issue_edit(tmp_path: Path) -> None:
+    repo = "AS215932/engineering-loop"
+    config = DaemonConfig(
+        repos=(repo,),
+        state_dir=tmp_path / "state",
+        output_root=tmp_path / "runs",
+        require_reliability_decision=True,
+        reliability_decision_authors=("trusted-governor",),
+    )
+    gh = FakeGh(
+        {
+            "issue list": _approved_issue_json(1, repo=repo, labels=["loop:approved"]),
+            "issue view": _issue_view_with_reliability_decision(
+                1,
+                repo=repo,
+                allowed_paths=["docs/"],
+                current_body="## Context\nEdited to request a source change.\n",
+                approved_body="## Context\nAdd a docs note.\n",
+            ),
+        }
+    )
+
+    report = daemon_once(config, client=gh, feature_runner=lambda **kwargs: pytest.fail("runner should not start"))
+
+    assert report.outcome == "needs_triage"
+    assert report.detail == "Reliability Decision Record is stale for the current issue title/body"
+
+
+def test_daemon_rejects_stale_reliability_decision_after_long_body_tail_edit(tmp_path: Path) -> None:
+    repo = "AS215932/engineering-loop"
+    approved_body = "## Context\n" + ("a" * 5200)
+    current_body = approved_body + "\nEdit past the old hash boundary: run source migration."
+    config = DaemonConfig(
+        repos=(repo,),
+        state_dir=tmp_path / "state",
+        output_root=tmp_path / "runs",
+        require_reliability_decision=True,
+        reliability_decision_authors=("trusted-governor",),
+    )
+    gh = FakeGh(
+        {
+            "issue list": _approved_issue_json(1, repo=repo, labels=["loop:approved"]),
+            "issue view": _issue_view_with_reliability_decision(
+                1,
+                repo=repo,
+                allowed_paths=["docs/"],
+                current_body=current_body,
+                approved_body=approved_body,
+            ),
+        }
+    )
+
+    report = daemon_once(config, client=gh, feature_runner=lambda **kwargs: pytest.fail("runner should not start"))
+
+    assert report.outcome == "needs_triage"
+    assert report.detail == "Reliability Decision Record is stale for the current issue title/body"
+
+
+def test_daemon_rejects_stale_lhp_payload_hash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = "AS215932/engineering-loop"
+    body = _lhp_body()
+    approved_payload = _lhp_payload("original disk follow-up")
+    current_payload = _lhp_payload("changed disk follow-up")
+    config = DaemonConfig(
+        repos=(repo,),
+        state_dir=tmp_path / "state",
+        output_root=tmp_path / "runs",
+        require_reliability_decision=True,
+        reliability_decision_authors=("trusted-governor",),
+        lhp=LhpClientConfig(
+            base_url="http://noc",
+            secret="shared",
+        ),
+    )
+    gh = FakeGh(
+        {
+            "issue list": _approved_issue_json(1, repo=repo, labels=["loop:approved"]),
+            "issue view": _issue_view_with_reliability_decision(
+                1,
+                repo=repo,
+                allowed_paths=["docs/"],
+                current_body=body,
+                lhp_payload_hash=payload_hash(approved_payload)[:16],
+            ),
+        }
+    )
+    monkeypatch.setattr(
+        "hyrule_engineering_loop.daemon.fetch_lhp_payload",
+        lambda *_args, **_kwargs: current_payload,
+    )
+
+    report = daemon_once(config, client=gh, feature_runner=lambda **kwargs: pytest.fail("runner should not start"))
+
+    assert report.outcome == "needs_triage"
+    assert report.detail == "Reliability Decision Record record-1 LHP payload hash is stale"
 
 
 def test_repo_name_for_issue_maps_core_repo_checkout_names() -> None:

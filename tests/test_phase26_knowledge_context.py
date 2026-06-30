@@ -5,11 +5,15 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import anyio
+import pytest
+
 from hyrule_engineering_loop.feature import build_feature_state
 from hyrule_engineering_loop.knowledge_context import (
     KnowledgeContextConfig,
     _mcp_read_write_streams,
     _mcp_tool_result_to_dict,
+    _read_mcp_context_pack_async,
     load_knowledge_context,
 )
 
@@ -75,6 +79,70 @@ def test_mcp_tool_result_text_content_is_parsed() -> None:
 def test_mcp_read_write_streams_accepts_sse_and_streamable_shapes() -> None:
     assert _mcp_read_write_streams(("read", "write")) == ("read", "write")
     assert _mcp_read_write_streams(("read", "write", "session")) == ("read", "write")
+
+
+def test_mcp_context_pack_request_forwards_authority_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class FakeClientSession:
+        def __init__(self, read_stream: object, write_stream: object) -> None:
+            self.read_stream = read_stream
+            self.write_stream = write_stream
+
+        async def __aenter__(self) -> FakeClientSession:
+            return self
+
+        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+        async def initialize(self) -> None:
+            return None
+
+        async def call_tool(self, name: str, arguments: dict[str, object]) -> SimpleNamespace:
+            calls.append((name, arguments))
+            return SimpleNamespace(structuredContent=FIXTURE_PACK)
+
+    class FakeStreamContext:
+        async def __aenter__(self) -> tuple[str, str]:
+            return "read", "write"
+
+        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+    def fake_streamablehttp_client(url: str, *, timeout: int, sse_read_timeout: int) -> FakeStreamContext:
+        assert url == "http://knowledge.local/mcp"
+        assert timeout == 20
+        assert sse_read_timeout == 20
+        return FakeStreamContext()
+
+    def fake_import_module(name: str) -> SimpleNamespace:
+        if name == "mcp":
+            return SimpleNamespace(ClientSession=FakeClientSession)
+        if name == "mcp.client.streamable_http":
+            return SimpleNamespace(streamablehttp_client=fake_streamablehttp_client)
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr("hyrule_engineering_loop.knowledge_context.import_module", fake_import_module)
+
+    pack = anyio.run(
+        _read_mcp_context_pack_async,
+        "Engineer a Hyrule Cloud change",
+        KnowledgeContextConfig(enabled=True, mcp_url="http://knowledge.local/mcp", authority_min="A1"),
+    )
+
+    assert pack == FIXTURE_PACK
+    assert calls == [
+        (
+            "knowledge_context_pack",
+            {
+                "task": "Engineer a Hyrule Cloud change",
+                "role": "engineering_loop",
+                "risk_level": "low",
+                "budget_tokens": 6000,
+                "authority_min": "A1",
+            },
+        )
+    ]
 
 
 def test_feature_state_includes_optional_knowledge_context(tmp_path: Path) -> None:
