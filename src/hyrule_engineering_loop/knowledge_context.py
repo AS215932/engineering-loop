@@ -23,6 +23,11 @@ class KnowledgeContextError(RuntimeError):
     """Raised when optional knowledge context loading fails."""
 
 
+_KNOWLEDGE_ROLE_ALIASES = {
+    "engineering_loop_reliability_governor": "engineering_loop",
+}
+
+
 @dataclass(frozen=True)
 class KnowledgeContextConfig:
     enabled: bool = False
@@ -56,6 +61,10 @@ def _truthy(value: str | None) -> bool:
     return value is not None and value.lower() in {"1", "true", "yes", "on"}
 
 
+def _knowledge_role_for_transport(role: str) -> str:
+    return _KNOWLEDGE_ROLE_ALIASES.get(role, role)
+
+
 def load_knowledge_context(task: str, *, config: KnowledgeContextConfig | None = None) -> dict[str, Any]:
     active = config or KnowledgeContextConfig.from_env()
     if not active.enabled:
@@ -82,6 +91,7 @@ def _load_pack(task: str, config: KnowledgeContextConfig) -> dict[str, Any]:
     repo_path = config.repo_path.expanduser().resolve()
     if not repo_path.is_dir():
         raise KnowledgeContextError(f"knowledge repo not found: {repo_path}")
+    role = _knowledge_role_for_transport(config.role)
     command = [
         "uv",
         "run",
@@ -90,7 +100,7 @@ def _load_pack(task: str, config: KnowledgeContextConfig) -> dict[str, Any]:
         "--task",
         task,
         "--role",
-        config.role,
+        role,
         "--risk-level",
         config.risk_level,
         "--budget-tokens",
@@ -141,6 +151,7 @@ async def _read_mcp_context_pack_async(task: str, config: KnowledgeContextConfig
         raise KnowledgeContextError("optional dependency `mcp` is required for HYRULE_KNOWLEDGE_MCP_URL") from exc
 
     assert config.mcp_url is not None
+    role = _knowledge_role_for_transport(config.role)
     async with client_factory(config.mcp_url, timeout=config.timeout_seconds, sse_read_timeout=config.timeout_seconds) as streams:
         read_stream, write_stream = _mcp_read_write_streams(streams)
         async with client_session(read_stream, write_stream) as session:
@@ -149,7 +160,7 @@ async def _read_mcp_context_pack_async(task: str, config: KnowledgeContextConfig
                 "knowledge_context_pack",
                 {
                     "task": task,
-                    "role": config.role,
+                    "role": role,
                     "risk_level": config.risk_level,
                     "budget_tokens": config.budget_tokens,
                     "authority_min": config.authority_min,
