@@ -127,7 +127,12 @@ def test_mcp_context_pack_request_forwards_authority_floor(monkeypatch: pytest.M
     pack = anyio.run(
         _read_mcp_context_pack_async,
         "Engineer a Hyrule Cloud change",
-        KnowledgeContextConfig(enabled=True, mcp_url="http://knowledge.local/mcp", authority_min="A1"),
+        KnowledgeContextConfig(
+            enabled=True,
+            role="engineering_loop_reliability_governor",
+            mcp_url="http://knowledge.local/mcp",
+            authority_min="A1",
+        ),
     )
 
     assert pack == FIXTURE_PACK
@@ -143,6 +148,28 @@ def test_mcp_context_pack_request_forwards_authority_floor(monkeypatch: pytest.M
             },
         )
     ]
+
+
+def test_cli_context_pack_request_normalizes_governor_role(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout=json.dumps(FIXTURE_PACK), stderr="")
+
+    monkeypatch.setattr("hyrule_engineering_loop.knowledge_context.subprocess.run", fake_run)
+
+    result = load_knowledge_context(
+        "Engineer a Hyrule Cloud change",
+        config=KnowledgeContextConfig(
+            enabled=True,
+            repo_path=tmp_path,
+            role="engineering_loop_reliability_governor",
+        ),
+    )
+
+    assert result["status"] == "ok"
+    assert calls[0][calls[0].index("--role") + 1] == "engineering_loop"
 
 
 def test_feature_state_includes_optional_knowledge_context(tmp_path: Path) -> None:
