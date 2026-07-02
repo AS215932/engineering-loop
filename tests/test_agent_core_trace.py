@@ -11,6 +11,8 @@ import pytest
 
 pytest.importorskip("agent_core")
 
+from agent_core.contracts import LoopDecisionEnvelope
+
 from hyrule_engineering_loop import agent_core_trace
 
 
@@ -88,11 +90,11 @@ def test_emits_when_enabled(monkeypatch, tmp_path):
     monkeypatch.setenv("HYRULE_ENGINEERING_AGENT_CORE_TRACE", "1")
     monkeypatch.setenv("HYRULE_ENGINEERING_AGENT_CORE_TRACE_PATH", str(sink))
     count = agent_core_trace.emit_loop_trace(_state())
-    assert count == 4
+    assert count == 5
     lines = sink.read_text(encoding="utf-8").strip().splitlines()
-    assert len(lines) == 4
+    assert len(lines) == 5
     kinds = {json.loads(line)["event_type"] for line in lines}
-    assert kinds == {"model_call", "tool_call", "backend_execution", "loop_node"}
+    assert kinds == {"model_call", "tool_call", "backend_execution", "loop_node", "loop_decision_envelope"}
     backend = next(
         json.loads(line) for line in lines if json.loads(line)["event_type"] == "backend_execution"
     )
@@ -104,6 +106,13 @@ def test_emits_when_enabled(monkeypatch, tmp_path):
     assert backend["workflow_run_id"] == "28392093138"
     loop_node = next(json.loads(line) for line in lines if json.loads(line)["event_type"] == "loop_node")
     assert loop_node["parent_event_id"]
+    envelope_event = next(
+        json.loads(line) for line in lines if json.loads(line)["event_type"] == "loop_decision_envelope"
+    )
+    envelope = LoopDecisionEnvelope.model_validate(envelope_event["payload"]["loop_decision_envelope"])
+    assert envelope.loop == "engineering"
+    assert envelope.decision == "draft"
+    assert envelope.proposed_action["pr_url"] == "https://github.com/AS215932/network-operations/pull/318"
 
 
 def test_emit_published_trace_reemits_pr_correlation(monkeypatch, tmp_path):
@@ -127,7 +136,7 @@ def test_emit_published_trace_reemits_pr_correlation(monkeypatch, tmp_path):
         ],
     )
 
-    assert count == 4
+    assert count == 5
     records = [json.loads(line) for line in sink.read_text(encoding="utf-8").splitlines()]
     assert {record["pr_number"] for record in records} == {319}
     assert {record["commit_sha"] for record in records} == {"publishedabc"}
@@ -141,12 +150,13 @@ def test_emits_to_collector_and_file_when_collector_url_is_set(monkeypatch, tmp_
         monkeypatch.setenv("HYRULE_ENGINEERING_AGENT_CORE_TRACE_COLLECTOR_URL", url)
         count = agent_core_trace.emit_loop_trace(_state())
 
-    assert count == 4
-    assert len(sink.read_text(encoding="utf-8").strip().splitlines()) == 4
+    assert count == 5
+    assert len(sink.read_text(encoding="utf-8").strip().splitlines()) == 5
     assert [event["event_type"] for event in received] == [
         "model_call",
         "tool_call",
         "backend_execution",
         "loop_node",
+        "loop_decision_envelope",
     ]
     assert received[-1]["change_id"] == "chg-test-1"
