@@ -1,0 +1,46 @@
+{
+  "insights": [
+    {
+      "schema_version": "0.1.0",
+      "insight_id": "ins_eng_question",
+      "loop": "engineering",
+      "fingerprint": "eng-question",
+      "sampling_class": "surfaced",
+      "candidate_type": "github_issue",
+      "candidate_source": "reliability_governor",
+      "support_facts": ["Issue needs context", "needs_context"],
+      "evidence_refs": [{"kind": "github_issue", "ref": "AS215932/engineering-loop#32"}],
+      "action_selected": "question",
+      "why_now": "Governor needs missing context before routing.",
+      "policy_version": "engineering-insight.fixture"
+    },
+    {
+      "schema_version": "0.1.0",
+      "insight_id": "ins_eng_draft",
+      "loop": "engineering",
+      "fingerprint": "eng-draft",
+      "sampling_class": "surfaced",
+      "candidate_type": "approved_queue",
+      "candidate_source": "engineering_daemon",
+      "support_facts": ["Approved work is ready"],
+      "evidence_refs": [{"kind": "github_issue", "ref": "AS215932/engineering-loop#33"}],
+      "action_selected": "draft",
+      "why_now": "Approved queue item can be drafted.",
+      "policy_version": "engineering-insight.fixture"
+    },
+    {
+      "schema_version": "0.1.0",
+      "insight_id": "ins_eng_silent",
+      "loop": "engineering",
+      "fingerprint": "eng-silent",
+      "sampling_class": "withheld_logged",
+      "candidate_type": "signal",
+      "candidate_source": "engineering_intake:fixture",
+      "support_facts": ["Duplicate signal already has an open issue"],
+      "evidence_refs": [{"kind": "related", "ref": "AS215932/engineering-loop#32"}],
+      "action_selected": "stay_silent",
+      "why_now": "Existing issue already covers the signal.",
+      "policy_version": "engineering-insight.fixture"
+    }
+  ]
+}
