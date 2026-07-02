@@ -12,7 +12,9 @@ the loop, and the returned count reflects events delivered to at least one sink.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
+import json
 import os
 from collections.abc import Mapping
 from typing import Any
@@ -55,6 +57,7 @@ def emit_loop_trace(state: Mapping[str, Any]) -> int:
         sink = _sink_from_env()
         run_id = state.get("change_id")
         events = adapter.trace_events_from_loop_trace(_trace_payload(state), run_id=run_id)
+        events.append(_loop_decision_event(state, run_id=run_id))
         count = 0
         for event in events:
             if sink.emit(event):
@@ -87,3 +90,163 @@ def _trace_payload(state: Mapping[str, Any]) -> dict[str, Any]:
     if first.get("repo") and not payload.get("repository"):
         payload["repository"] = first.get("repo")
     return payload
+
+
+def _loop_decision_event(state: Mapping[str, Any], *, run_id: Any) -> Any:
+    contracts = importlib.import_module("agent_core.contracts")
+    TraceEvent = getattr(contracts, "TraceEvent")
+    LoopDecisionEnvelope = getattr(contracts, "LoopDecisionEnvelope")
+    GovernanceControls = getattr(contracts, "GovernanceControls")
+
+    payload = _trace_payload(state)
+    change_id = _string_or_none(payload.get("change_id") or run_id)
+    repository = _string_or_none(payload.get("repository") or _first_pr_result(payload).get("repo"))
+    pr_url = _string_or_none(payload.get("pr_url") or _first_github_pr(payload).get("url"))
+    commit_sha = _string_or_none(payload.get("commit_sha") or _first_pr_result(payload).get("commit"))
+    workflow_run_id = _string_or_none(payload.get("workflow_run_id"))
+    decision = _decision_from_state(payload)
+    evidence_refs = _source_refs_from_state(payload)
+    envelope = LoopDecisionEnvelope(
+        envelope_id=f"ldec_eng_{_stable_hash([change_id, repository, decision, pr_url, commit_sha])}",
+        loop="engineering",
+        environment="production",
+        graph_id="engineering-loop",
+        node_id="loop_runtime",
+        agent_role="engineering_loop",
+        run_id=change_id,
+        trace_id=_string_or_none(payload.get("trace_id")) or change_id,
+        input_event={
+            "change_id": change_id,
+            "repository": repository,
+            "workflow_run_id": workflow_run_id,
+            "approval_decision": payload.get("approval_decision"),
+            "pr_status": payload.get("pr_status"),
+        },
+        retrieved_context=_context_refs(payload),
+        decision=decision,
+        evidence_refs=evidence_refs,
+        proposed_action={
+            "pr_status": payload.get("pr_status"),
+            "pr_url": pr_url,
+            "commit_sha": commit_sha,
+            "gate_result_count": len(_listish(payload.get("gate_results"))),
+            "backend_result_count": len(_listish(payload.get("backend_results"))),
+        },
+        human_outcome={
+            key: value
+            for key, value in {"approval_decision": _string_or_none(payload.get("approval_decision"))}.items()
+            if value
+        },
+        governance=GovernanceControls(
+            sensitivity_class="internal",
+            approval_tier="operator",
+            risk_class="medium",
+            learning_allowed=True,
+            never_learn=False,
+            policy_ids=["engineering-loop-decision.v1"],
+            rationale="Engineering Loop runtime decisions are emitted as sanitized envelopes for replay.",
+        ),
+        case_id=_string_or_none(payload.get("case_id")),
+        fingerprint=_string_or_none(payload.get("fingerprint") or change_id or repository) or "",
+        policy_version="engineering-loop-decision.v1",
+    )
+    return TraceEvent(
+        event_type="loop_decision_envelope",
+        graph_id="engineering-loop",
+        node_id="loop_decision_envelope",
+        agent_role="engineering_loop",
+        environment="production",
+        run_id=change_id,
+        trace_id=envelope.trace_id,
+        change_id=change_id,
+        repository=repository,
+        pr_number=_pr_number(pr_url),
+        commit_sha=commit_sha,
+        workflow_run_id=workflow_run_id,
+        summary=f"Engineering Loop decision envelope for {change_id or repository or 'run'}",
+        payload={"loop_decision_envelope": envelope.model_dump(mode="json")},
+    )
+
+
+def _decision_from_state(state: Mapping[str, Any]) -> str:
+    if _listish(state.get("pr_results")) or state.get("pr_status") == "pushed":
+        return "draft"
+    approval = str(state.get("approval_decision") or "").lower()
+    if approval in {"pending", "review", "needs_review"}:
+        return "question"
+    if approval in {"rejected", "blocked"}:
+        return "stay_silent"
+    if _listish(state.get("gate_results")) or _listish(state.get("backend_results")):
+        return "draft"
+    return "stay_silent"
+
+
+def _source_refs_from_state(state: Mapping[str, Any]) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = []
+    repository = _string_or_none(state.get("repository") or _first_pr_result(state).get("repo"))
+    if repository:
+        refs.append({"kind": "repo", "ref": repository})
+    pr_url = _string_or_none(state.get("pr_url") or _first_github_pr(state).get("url"))
+    if pr_url:
+        refs.append({"kind": "github_pr", "ref": pr_url})
+    workflow_run_id = _string_or_none(state.get("workflow_run_id"))
+    if workflow_run_id:
+        refs.append({"kind": "github_actions", "ref": workflow_run_id})
+    refs.extend(_context_refs(state))
+    return refs[:20]
+
+
+def _context_refs(state: Mapping[str, Any]) -> list[dict[str, str]]:
+    context = state.get("knowledge_context") or state.get("context_pack")
+    if not isinstance(context, Mapping):
+        return []
+    raw_refs = context.get("included_refs") or context.get("source_refs") or []
+    refs: list[dict[str, str]] = []
+    for item in _listish(raw_refs)[:12]:
+        if isinstance(item, Mapping) and item.get("ref"):
+            refs.append({"kind": _safe_text(item.get("kind") or "knowledge", limit=64), "ref": _safe_text(item["ref"], limit=180)})
+    return refs
+
+
+def _first_pr_result(state: Mapping[str, Any]) -> Mapping[str, Any]:
+    pr_results = _listish(state.get("pr_results"))
+    first = pr_results[0] if pr_results else {}
+    return first if isinstance(first, Mapping) else {}
+
+
+def _first_github_pr(state: Mapping[str, Any]) -> Mapping[str, Any]:
+    github_pr = _first_pr_result(state).get("github_pr")
+    return github_pr if isinstance(github_pr, Mapping) else {}
+
+
+def _pr_number(url: str | None) -> int | None:
+    if not url:
+        return None
+    tail = url.rstrip("/").rsplit("/", 1)[-1]
+    return int(tail) if tail.isdigit() else None
+
+
+def _listish(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return []
+
+
+def _safe_text(value: Any, *, limit: int = 120) -> str:
+    text = _string_or_none(value) or ""
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def _string_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _stable_hash(parts: list[Any]) -> str:
+    payload = json.dumps(parts, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
