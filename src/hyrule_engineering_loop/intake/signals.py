@@ -16,8 +16,10 @@ import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, TypeAlias
 
+from hyrule_engineering_loop.insights import signal_insight_record, write_insight_record
 from hyrule_engineering_loop.intake.github_issues import (
     GhClient,
     IntakeReport,
@@ -223,6 +225,7 @@ def signals_to_candidates(
     repo: str,
     client: GhClient,
     dry_run: bool = False,
+    insight_state_dir: Path | None = None,
 ) -> IntakeReport:
     """Dedupe signals against open issues and file the new ones as candidates."""
     report = IntakeReport(dry_run=dry_run)
@@ -236,6 +239,24 @@ def signals_to_candidates(
                     "existing_issue": existing,
                 }
             )
+            if insight_state_dir is not None and not dry_run:
+                write_insight_record(
+                    signal_insight_record(
+                        repo=repo,
+                        source=signal.source,
+                        identifier=signal.identifier,
+                        title=signal.title,
+                        context=signal.context,
+                        action_items=signal.action_items,
+                        related=signal.related,
+                        fingerprint=signal.fingerprint,
+                        action_selected="stay_silent",
+                        sampling_class="withheld_logged",
+                        why_now="Fingerprint dedupe found an existing open issue.",
+                        issue_ref=str(existing),
+                    ),
+                    insight_state_dir,
+                )
             continue
         entry: dict[str, Any] = {
             "title": signal.title,
@@ -253,5 +274,23 @@ def signals_to_candidates(
                 fingerprint=signal.fingerprint,
                 client=client,
             )
+            if insight_state_dir is not None:
+                write_insight_record(
+                    signal_insight_record(
+                        repo=repo,
+                        source=signal.source,
+                        identifier=signal.identifier,
+                        title=signal.title,
+                        context=signal.context,
+                        action_items=signal.action_items,
+                        related=signal.related,
+                        fingerprint=signal.fingerprint,
+                        action_selected="draft",
+                        sampling_class="surfaced",
+                        why_now="Read-only mined signal had no open fingerprint match; filed candidate issue.",
+                        issue_ref=str(entry.get("url", "")),
+                    ),
+                    insight_state_dir,
+                )
         report.filed.append(entry)
     return report

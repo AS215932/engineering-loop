@@ -29,6 +29,7 @@ from typing import Any, Callable, TypeAlias
 
 from hyrule_engineering_loop.agent_core_trace import emit_published_trace
 from hyrule_engineering_loop.feature import run_feature_intake
+from hyrule_engineering_loop.insights import daemon_insight_record, write_insight_record
 from hyrule_engineering_loop.knowledge_context import KnowledgeContextConfig
 from hyrule_engineering_loop.lhp import (
     LhpClientConfig,
@@ -634,6 +635,15 @@ def daemon_once(
         day = datetime.now(UTC).strftime("%Y-%m-%d")
         ledger = load_ledger(state_dir, day)
         if int(ledger.get("runs", 0)) >= config.max_runs_per_day:
+            write_insight_record(
+                daemon_insight_record(
+                    action_selected="stay_silent",
+                    sampling_class="withheld_logged",
+                    why_now=f"daily run budget reached ({config.max_runs_per_day})",
+                    budget_context=ledger,
+                ),
+                state_dir,
+            )
             return _finish(
                 DaemonReport(
                     outcome="over_budget",
@@ -643,6 +653,15 @@ def daemon_once(
                 icinga_poster,
             )
         if float(ledger.get("cost_usd", 0.0)) >= config.max_cost_usd_per_day:
+            write_insight_record(
+                daemon_insight_record(
+                    action_selected="stay_silent",
+                    sampling_class="withheld_logged",
+                    why_now=f"daily cost budget reached (${config.max_cost_usd_per_day:.2f})",
+                    budget_context=ledger,
+                ),
+                state_dir,
+            )
             return _finish(
                 DaemonReport(
                     outcome="over_budget",
@@ -654,6 +673,15 @@ def daemon_once(
 
         queue = list_issues_with_label(list(config.repos), APPROVED_LABEL, client=client)
         if not queue:
+            write_insight_record(
+                daemon_insight_record(
+                    action_selected="stay_silent",
+                    sampling_class="sampled_quiet_interval",
+                    why_now="approved queue is empty",
+                    budget_context=ledger,
+                ),
+                state_dir,
+            )
             return _finish(
                 DaemonReport(outcome="idle", detail="approved queue is empty"),
                 discord_poster,
@@ -674,6 +702,16 @@ def daemon_once(
             trusted_authors=config.reliability_decision_authors,
         )
         if approval_error is not None or effective_allowed_paths is None:
+            write_insight_record(
+                daemon_insight_record(
+                    action_selected="question",
+                    sampling_class="surfaced",
+                    why_now=(approval_error or "approved issue has no valid Reliability Decision Record")[:200],
+                    issue_ref=f"{item.repo}#{item.number}",
+                    budget_context=ledger,
+                ),
+                state_dir,
+            )
             return _finish(
                 DaemonReport(
                     outcome="needs_triage",
@@ -685,6 +723,16 @@ def daemon_once(
                 icinga_poster,
             )
         lhp_config = config.lhp or LhpClientConfig.from_env()
+        write_insight_record(
+            daemon_insight_record(
+                action_selected="draft",
+                sampling_class="surfaced",
+                why_now="selected highest-priority approved issue for one-at-a-time execution",
+                issue_ref=f"{item.repo}#{item.number}",
+                budget_context=ledger,
+            ),
+            state_dir,
+        )
         lhp_pointer = parse_lhp_pointer(body)
         lhp_payload: dict[str, Any] | None = None
         if lhp_pointer is not None:

@@ -549,8 +549,9 @@ def governor_command(args: argparse.Namespace) -> int:
 def intake_scan_command(args: argparse.Namespace) -> int:
     client = GhCli()
     signals, skipped = mine_all_signals(repo=args.repo, client=client)
+    insight_state_dir = Path(args.insight_state_dir).expanduser() if args.insight_state_dir else Path(".engineering-loop-state/intake")
     report = signals_to_candidates(
-        signals, repo=args.repo, client=client, dry_run=args.dry_run
+        signals, repo=args.repo, client=client, dry_run=args.dry_run, insight_state_dir=insight_state_dir
     )
     report.skipped_miners = skipped
     payload = report.as_dict()
@@ -988,6 +989,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     intake_scan_parser.add_argument("--repo", default=DEFAULT_INTAKE_REPO)
     intake_scan_parser.add_argument("--dry-run", action="store_true")
+    intake_scan_parser.add_argument("--insight-state-dir")
     intake_scan_parser.add_argument("--json", action="store_true")
     intake_scan_parser.set_defaults(func=intake_scan_command)
 

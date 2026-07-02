@@ -18,6 +18,7 @@ from typing import Any, Callable, Literal, TypeAlias
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+from hyrule_engineering_loop.insights import governor_insight_record, write_insight_record
 from hyrule_engineering_loop.intake import (
     APPROVED_LABEL,
     CANDIDATE_LABEL,
@@ -527,6 +528,19 @@ def governor_once(
                 if _labels_already_converged(issue, record):
                     report.skipped.append(f"{issue.issue_id}: unchanged decision {record.record_id}")
                     report.records.append(record)
+                    write_insight_record(
+                        governor_insight_record(
+                            issue_id=issue.issue_id,
+                            title=issue.title,
+                            routing_decision=record.routing_decision,
+                            reasons=record.denial_reasons or ["unchanged decision and labels already converged"],
+                            labels=issue.labels,
+                            policy_version=record.schema_version,
+                            action_selected="stay_silent",
+                            sampling_class="withheld_logged",
+                        ),
+                        config.state_dir,
+                    )
                     continue
                 else:
                     apply_label_transition(issue, record, client=client)
@@ -535,6 +549,17 @@ def governor_once(
                 path = write_decision_record(record, config.state_dir)
                 record.storage_path = str(path)
                 apply_label_transition(issue, record, client=client)
+            write_insight_record(
+                governor_insight_record(
+                    issue_id=issue.issue_id,
+                    title=issue.title,
+                    routing_decision=record.routing_decision,
+                    reasons=record.denial_reasons,
+                    labels=issue.labels,
+                    policy_version=record.schema_version,
+                ),
+                config.state_dir,
+            )
         report.records.append(record)
         processed += 1
     return report

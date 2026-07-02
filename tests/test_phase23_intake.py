@@ -100,6 +100,35 @@ def test_duplicate_signal_files_nothing() -> None:
     assert gh.mutating_calls() == []
 
 
+def test_signal_intake_writes_insight_records(tmp_path) -> None:
+    fingerprint = signal_fingerprint("icinga", "node-up@dns")
+    dedupe_gh = FakeGh(responses={"issue list": json.dumps([{"number": 240}])})
+
+    signals_to_candidates(
+        [_signal()],
+        repo="AS215932/network-operations",
+        client=dedupe_gh,
+        insight_state_dir=tmp_path,
+    )
+
+    rows = [json.loads(line) for line in next((tmp_path / "insights").glob("*.jsonl")).read_text().splitlines()]
+    assert rows[0]["fingerprint"] == fingerprint
+    assert rows[0]["action_selected"] == "stay_silent"
+    assert rows[0]["sampling_class"] == "withheld_logged"
+
+    filed_gh = FakeGh(responses={"issue list": "[]", "issue create": "https://example.test/issues/1\n"})
+    signals_to_candidates(
+        [_signal("router-down@ams")],
+        repo="AS215932/network-operations",
+        client=filed_gh,
+        insight_state_dir=tmp_path,
+    )
+
+    rows = [json.loads(line) for line in next((tmp_path / "insights").glob("*.jsonl")).read_text().splitlines()]
+    assert rows[-1]["action_selected"] == "draft"
+    assert rows[-1]["sampling_class"] == "surfaced"
+
+
 def test_candidate_issue_body_and_label_protocol() -> None:
     gh = FakeGh(
         responses={
