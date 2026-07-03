@@ -435,6 +435,43 @@ def test_reliability_governor_posts_record_before_applying_labels_and_stores_jso
     assert stored_record["routing_decision"] == "allow_approved"
 
 
+def test_converged_approved_decision_is_not_reposted_when_knowledge_pack_changes(tmp_path: Path) -> None:
+    issue = _issue(
+        title="Update docs runbook",
+        body="Update documentation and verify rendered docs.",
+        labels=[APPROVED_LABEL],
+    )
+    gh = FakeGh([_issue_json(issue)])
+    config = ReliabilityGovernorConfig(
+        repos=(issue.repo,),
+        state_dir=tmp_path / "reliability-governor",
+        dry_run=False,
+    )
+    pack_ids = iter(["ctx_first_governor_pack", "ctx_second_governor_pack"])
+
+    def rotating_knowledge(_: str, __: Any) -> Any:
+        pack_id = next(pack_ids)
+        return summarize_knowledge_pack(
+            {
+                **CURRENT_PACK,
+                "id": pack_id,
+                "knowledge_snapshot": f"export-{pack_id}",
+            }
+        )
+
+    first = reliability_governor_once(config, client=gh, knowledge_loader=rotating_knowledge)
+    second = reliability_governor_once(config, client=gh, knowledge_loader=rotating_knowledge)
+
+    comment_calls = [call for call in gh.calls if call[:2] == ["issue", "comment"]]
+    stored = list((tmp_path / "reliability-governor").glob("*.json"))
+    assert first.records[0].routing_decision == "allow_approved"
+    assert second.records[0].routing_decision == "allow_approved"
+    assert first.records[0].record_id != second.records[0].record_id
+    assert len(comment_calls) == 1
+    assert len(stored) == 1
+    assert second.skipped == [f"{issue.issue_id}: unchanged decision {first.records[0].record_id}"]
+
+
 def test_unchanged_candidate_decision_is_not_reposted(tmp_path: Path) -> None:
     issue = _issue(
         title="Update internal service helper",
@@ -709,7 +746,7 @@ def test_bgp_policy_and_secret_billing_work_are_not_auto_approved() -> None:
     assert bgp_record.handoff_contract == "human_review"
     assert NEEDS_HUMAN_LABEL in bgp_record.labels_to_add
     assert APPROVED_LABEL not in bgp_record.labels_to_add
-    assert "production routing is not explicitly allowed" in bgp_record.denial_reasons
+    assert "production network/routing is not explicitly allowed" in bgp_record.denial_reasons
 
     assert secret_record.routing_decision == "needs_human"
     assert secret_record.next_loop == "human"
@@ -717,3 +754,30 @@ def test_bgp_policy_and_secret_billing_work_are_not_auto_approved() -> None:
     assert NEEDS_HUMAN_LABEL in secret_record.labels_to_add
     assert APPROVED_LABEL not in secret_record.labels_to_add
     assert any("not explicitly allowed" in reason for reason in secret_record.denial_reasons)
+
+
+def test_network_operations_dns64_resolver_infra_is_human_gated_despite_docs_and_tests() -> None:
+    issue = _issue(
+        title="Add resolv01/resolv02 recursive DNS64 resolver VMs",
+        body=(
+            "Separate authoritative DNS from recursive/DNS64 resolution. "
+            "Add inventory hosts for resolv01 and resolv02, allocate stable IPv6 addresses, "
+            "run Unbound, configure firewall rules, update customer VM provisioning, "
+            "update docs, and add render/static tests."
+        ),
+        repo="AS215932/network-operations",
+    )
+
+    record = govern_issue(
+        issue,
+        registry=default_capability_registry(),
+        knowledge_loader=_knowledge,
+    )
+
+    assert record.intent_type == "production_network"
+    assert record.risk_tier == 3
+    assert record.routing_decision == "needs_human"
+    assert record.next_loop == "human"
+    assert NEEDS_HUMAN_LABEL in record.labels_to_add
+    assert APPROVED_LABEL not in record.labels_to_add
+    assert "production network/routing is not explicitly allowed" in record.denial_reasons
