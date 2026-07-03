@@ -523,9 +523,10 @@ def governor_once(
         if not config.dry_run:
             path = decision_record_path(record, config.state_dir)
             record.storage_path = str(path)
-            if path.exists():
+            prior_record = find_matching_decision_record(record, config.state_dir)
+            if prior_record is not None:
                 if _labels_already_converged(issue, record):
-                    report.skipped.append(f"{issue.issue_id}: unchanged decision {record.record_id}")
+                    report.skipped.append(f"{issue.issue_id}: unchanged decision {prior_record.record_id}")
                     report.records.append(record)
                     continue
                 else:
@@ -1078,6 +1079,42 @@ def decision_record_path(record: CandidateDecisionRecord, state_dir: Path) -> Pa
     root = state_dir.expanduser().resolve()
     filename = f"{_slug(record.repo)}-{record.issue_number}-{record.record_id}.json"
     return root / filename
+
+
+def find_matching_decision_record(
+    record: CandidateDecisionRecord,
+    state_dir: Path,
+) -> CandidateDecisionRecord | None:
+    """Return an existing audit record with the same stable routing decision."""
+
+    root = state_dir.expanduser().resolve()
+    if not root.exists():
+        return None
+    prefix = f"{_slug(record.repo)}-{record.issue_number}-*.json"
+    signature = stable_decision_signature(record)
+    for path in sorted(root.glob(prefix)):
+        try:
+            prior = CandidateDecisionRecord.model_validate_json(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if stable_decision_signature(prior) == signature:
+            return prior
+    return None
+
+
+def stable_decision_signature(record: CandidateDecisionRecord) -> dict[str, Any]:
+    """Return the decision fields that should make Governor posting idempotent."""
+
+    data = record.model_dump(mode="json")
+    for field_name in (
+        "record_id",
+        "created_at",
+        "knowledge_context_pack_id",
+        "knowledge_export_version",
+        "storage_path",
+    ):
+        data.pop(field_name, None)
+    return data
 
 
 def _load_governor_knowledge(

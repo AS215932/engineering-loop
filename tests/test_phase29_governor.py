@@ -435,6 +435,43 @@ def test_reliability_governor_posts_record_before_applying_labels_and_stores_jso
     assert stored_record["routing_decision"] == "allow_approved"
 
 
+def test_converged_approved_decision_is_not_reposted_when_knowledge_pack_changes(tmp_path: Path) -> None:
+    issue = _issue(
+        title="Update docs runbook",
+        body="Update documentation and verify rendered docs.",
+        labels=[APPROVED_LABEL],
+    )
+    gh = FakeGh([_issue_json(issue)])
+    config = ReliabilityGovernorConfig(
+        repos=(issue.repo,),
+        state_dir=tmp_path / "reliability-governor",
+        dry_run=False,
+    )
+    pack_ids = iter(["ctx_first_governor_pack", "ctx_second_governor_pack"])
+
+    def rotating_knowledge(_: str, __: Any) -> Any:
+        pack_id = next(pack_ids)
+        return summarize_knowledge_pack(
+            {
+                **CURRENT_PACK,
+                "id": pack_id,
+                "knowledge_snapshot": f"export-{pack_id}",
+            }
+        )
+
+    first = reliability_governor_once(config, client=gh, knowledge_loader=rotating_knowledge)
+    second = reliability_governor_once(config, client=gh, knowledge_loader=rotating_knowledge)
+
+    comment_calls = [call for call in gh.calls if call[:2] == ["issue", "comment"]]
+    stored = list((tmp_path / "reliability-governor").glob("*.json"))
+    assert first.records[0].routing_decision == "allow_approved"
+    assert second.records[0].routing_decision == "allow_approved"
+    assert first.records[0].record_id != second.records[0].record_id
+    assert len(comment_calls) == 1
+    assert len(stored) == 1
+    assert second.skipped == [f"{issue.issue_id}: unchanged decision {first.records[0].record_id}"]
+
+
 def test_unchanged_candidate_decision_is_not_reposted(tmp_path: Path) -> None:
     issue = _issue(
         title="Update internal service helper",
