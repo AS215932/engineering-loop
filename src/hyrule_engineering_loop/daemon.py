@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import ssl
 import time
 import urllib.request
@@ -92,6 +93,31 @@ LABEL_CHANGE_CLASSES: dict[str, ChangeClass] = {
     "ansible": "infra_ansible",
 }
 HIGH_RISK_LABELS = frozenset({"critical", "security"})
+
+BUDGET_LABEL_TIERS: dict[str, str] = {
+    "loop:budget-s": "s",
+    "loop:budget-small": "s",
+    "loop:budget-m": "m",
+    "loop:budget-medium": "m",
+    "loop:budget-l": "l",
+    "loop:budget-large": "l",
+    "loop:budget-xl": "xl",
+    "loop:budget-extra-large": "xl",
+}
+BUDGET_BODY_RE = re.compile(
+    r"(?im)^\s*(?:loop[-_ ]?budget|budget)\s*:\s*"
+    r"(?P<tier>s|small|m|medium|l|large|xl|extra[-_ ]?large)\s*$"
+)
+BUDGET_TIER_MULTIPLIERS: dict[str, float] = {
+    "s": 1.0,
+    "m": 1.0,
+    "l": 2.0,
+    "xl": 4.0,
+}
+BUDGET_TIER_FLOORS: dict[str, tuple[int, int, float]] = {
+    "l": (40, 90, 10.0),
+    "xl": (80, 180, 20.0),
+}
 
 
 class DaemonError(RuntimeError):
@@ -599,6 +625,68 @@ def _run_cost(final_state: dict[str, Any]) -> float:
     )
 
 
+def _normalize_budget_tier(value: str) -> str | None:
+    normalized = value.strip().lower().replace("_", "-").replace(" ", "-")
+    if normalized in {"s", "small"}:
+        return "s"
+    if normalized in {"m", "medium"}:
+        return "m"
+    if normalized in {"l", "large"}:
+        return "l"
+    if normalized in {"xl", "extra-large"}:
+        return "xl"
+    return None
+
+
+def issue_budget_tier(item: IntakeItem, *, body: str) -> str | None:
+    """Resolve the requested per-issue budget tier from labels or body fields."""
+    for label in item.labels:
+        tier = BUDGET_LABEL_TIERS.get(label.strip().lower())
+        if tier is not None:
+            return tier
+    match = BUDGET_BODY_RE.search(body)
+    if match is None:
+        return None
+    return _normalize_budget_tier(match.group("tier"))
+
+
+def backend_budget_for_issue(
+    config: DaemonConfig,
+    item: IntakeItem,
+    *,
+    body: str,
+) -> dict[str, Any]:
+    """Build the backend budget for one issue, including explicit sizing signals."""
+    budget: dict[str, Any] = {
+        "max_iterations": config.max_iterations_per_run,
+        "max_wall_clock_minutes": config.max_wall_clock_minutes_per_run,
+        "max_cost_usd": config.max_cost_usd_per_run,
+        "tier": "default",
+    }
+    tier = issue_budget_tier(item, body=body)
+    if tier is None:
+        return budget
+
+    budget["tier"] = tier
+    multiplier = BUDGET_TIER_MULTIPLIERS[tier]
+    budget["max_iterations"] = max(1, int(config.max_iterations_per_run * multiplier))
+    budget["max_wall_clock_minutes"] = max(
+        1,
+        int(config.max_wall_clock_minutes_per_run * multiplier),
+    )
+    budget["max_cost_usd"] = round(config.max_cost_usd_per_run * multiplier, 4)
+
+    floor = BUDGET_TIER_FLOORS.get(tier)
+    if floor is not None:
+        min_iterations, min_minutes, min_cost = floor
+        budget["max_iterations"] = max(budget["max_iterations"], min_iterations)
+        budget["max_wall_clock_minutes"] = max(
+            budget["max_wall_clock_minutes"], min_minutes
+        )
+        budget["max_cost_usd"] = max(float(budget["max_cost_usd"]), min_cost)
+    return budget
+
+
 # --- the cycle --------------------------------------------------------------
 
 
@@ -767,11 +855,7 @@ def daemon_once(
             allowed_paths=effective_allowed_paths,
             source_files=["README.md"],
             memory_dir=config.memory_dir,
-            backend_budget={
-                "max_iterations": config.max_iterations_per_run,
-                "max_wall_clock_minutes": config.max_wall_clock_minutes_per_run,
-                "max_cost_usd": config.max_cost_usd_per_run,
-            },
+            backend_budget=backend_budget_for_issue(config, item, body=body),
             knowledge_context=config.knowledge_context,
             knowledge_learning_dir=config.knowledge_learning_dir,
         )

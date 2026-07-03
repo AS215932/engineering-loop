@@ -148,6 +148,42 @@ def test_subprocess_backend_command_assembly_and_refusals(tmp_path: Path) -> Non
     assert "acceptEdits" not in read_only_command
 
 
+def test_pi_backend_defaults_to_json_mode_and_normalizes_usage_payload() -> None:
+    backend = PiBackend()
+    spec = TaskSpec(
+        change_id="PI_JSON",
+        change_class="app_feature",
+        risk_level="low",
+        request="measure this run",
+        allowed_paths={"hyrule-cloud": ("docs",)},
+    )
+    command = backend.build_command(
+        prompt=assemble_backend_prompt(spec, BackendConstraints(max_iterations=3)),
+        constraints=BackendConstraints(max_iterations=3),
+    )
+
+    assert command[:3] == ["pi", "--print", "--mode"]
+    assert command[3] == "json"
+
+    parsed = backend._parse_harness_output(
+        json.dumps(
+            {
+                "numTurns": "3",
+                "cost": {"usd": "0.0425"},
+                "usage": {"prompt_tokens": "1200", "completion_tokens": 240},
+                "output": "completed the requested edit",
+            }
+        )
+    )
+
+    assert parsed["num_turns"] == 3
+    assert parsed["total_cost_usd"] == 0.0425
+    assert parsed["usage"]["input_tokens"] == 1200
+    assert parsed["usage"]["output_tokens"] == 240
+    assert parsed["result"] == "completed the requested edit"
+    assert parsed["is_error"] is False
+
+
 def test_backend_selection_follows_tier_escalation(tmp_path: Path) -> None:
     policy_path = tmp_path / "model-policy.yml"
     policy_path.write_text(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -45,6 +46,8 @@ def run_gate_commands(
         if not argv:
             raise ValueError("gate command cannot be empty")
 
+        startup_error = False
+        result: dict[str, Any]
         try:
             completed = subprocess.run(
                 argv,
@@ -67,6 +70,16 @@ def run_gate_commands(
                 "stdout": _clip(_as_text(exc.stdout)),
                 "stderr": _clip(_as_text(exc.stderr) or f"timed out after {timeout_seconds}s"),
             }
+        except OSError as exc:
+            startup_error = True
+            result = {
+                "command": argv,
+                "returncode": 127,
+                "stdout": "",
+                "stderr": _clip(f"could not start command: {exc}"),
+            }
+
+        result["status"] = "passed" if result["returncode"] == 0 else "failed"
 
         results.append(result)
         if result["returncode"] != 0:
@@ -74,7 +87,11 @@ def run_gate_commands(
                 {
                     "node": "gate_execution",
                     "domain": "ci",
-                    "message": f"command failed: {' '.join(argv)}",
+                    "message": (
+                        f"command could not start: {' '.join(argv)}"
+                        if startup_error
+                        else f"command failed: {' '.join(argv)}"
+                    ),
                     "returncode": result["returncode"],
                     "stderr": result["stderr"],
                 }
@@ -83,12 +100,43 @@ def run_gate_commands(
     return results, errors
 
 
-def select_gate_commands_for_mutations(paths: Iterable[str]) -> list[list[str]]:
+def _python_project_gate_prefix(cwd: Path | str | None) -> list[str] | None:
+    if cwd is None:
+        return None
+    pyproject = Path(cwd) / "pyproject.toml"
+    if not pyproject.is_file():
+        return None
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError:
+        return None
+    project = data.get("project")
+    optional = project.get("optional-dependencies") if isinstance(project, dict) else None
+    if isinstance(optional, dict) and "dev" in optional:
+        return ["uv", "run", "--extra", "dev"]
+    groups = data.get("dependency-groups")
+    if isinstance(groups, dict) and "dev" in groups:
+        return ["uv", "run", "--group", "dev"]
+    return None
+
+
+def select_gate_commands_for_mutations(
+    paths: Iterable[str],
+    *,
+    cwd: Path | str | None = None,
+) -> list[list[str]]:
     """Select local, workspace-safe gates from proposed mutation paths."""
     normalized = [path.split(":", 1)[1] if ":" in path else path for path in paths]
     if not normalized:
         return []
     if any(path.endswith(".py") for path in normalized):
+        prefix = _python_project_gate_prefix(cwd)
+        if prefix is not None:
+            return [
+                [*prefix, "ruff", "check", "."],
+                [*prefix, "mypy", "."],
+                [*prefix, "python", "-m", "pytest", "-q"],
+            ]
         return [[sys.executable, "-m", "compileall", "-q", "."]]
     if all(path.startswith("docs/") or path.endswith((".md", ".txt", ".rst")) for path in normalized):
         paths_literal = repr(json.dumps(normalized))

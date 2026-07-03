@@ -19,7 +19,7 @@ from hyrule_engineering_loop.cli import main
 from hyrule_engineering_loop.feature import build_feature_state
 from hyrule_engineering_loop.graph import build_graph
 from hyrule_engineering_loop.judgment import run_agentic_evaluation
-from hyrule_engineering_loop.nodes import required_roles_for_state
+from hyrule_engineering_loop.nodes import planner_node, required_roles_for_state
 from hyrule_engineering_loop.prompts import load_role_prompts
 from hyrule_engineering_loop.promotion import rollback_promotions
 from hyrule_engineering_loop.state import GraphState
@@ -158,6 +158,29 @@ def test_planner_failure_routes_to_human_signoff(tmp_path: Path) -> None:
     )
     nodes = [event["node"] for event in final_state["trace_events"]]
     assert "delegate_implementation" not in nodes
+
+
+def test_planner_uses_issue_acceptance_section(tmp_path: Path) -> None:
+    state = _feature_state(tmp_path, "PLANNER_AC")
+    state["feature_request"] = "\n".join(
+        [
+            "Improve the monitoring runbook.",
+            "",
+            "## Acceptance criteria",
+            "- [ ] Runbook states the alert owner.",
+            "1. Dashboard link is added to the evidence section.",
+            "",
+            "## Non-goals",
+            "- No runtime changes.",
+        ]
+    )
+
+    update = planner_node(state)
+
+    assert update["task_spec"]["acceptance_criteria"] == [
+        "Runbook states the alert owner.",
+        "Dashboard link is added to the evidence section.",
+    ]
 
 
 # --- AC2: consult + judgment recorded ---------------------------------------
