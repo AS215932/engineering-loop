@@ -580,7 +580,96 @@ class SubprocessBackend:
             decoded = json.loads(stdout)
         except (json.JSONDecodeError, ValueError):
             return {}
-        return decoded if isinstance(decoded, dict) else {}
+        if not isinstance(decoded, dict):
+            return {}
+
+        parsed = dict(decoded)
+
+        def number_from(mapping: Mapping[str, Any], *keys: str) -> float | None:
+            for key in keys:
+                value = mapping.get(key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    return float(value)
+                if isinstance(value, str):
+                    try:
+                        return float(value)
+                    except ValueError:
+                        continue
+            return None
+
+        raw_usage = parsed.get("usage")
+        normalized_usage = dict(raw_usage) if isinstance(raw_usage, dict) else {}
+        input_tokens = number_from(
+            normalized_usage,
+            "input_tokens",
+            "inputTokens",
+            "prompt_tokens",
+            "promptTokens",
+        )
+        if input_tokens is None:
+            input_tokens = number_from(
+                parsed, "input_tokens", "inputTokens", "prompt_tokens", "promptTokens"
+            )
+        output_tokens = number_from(
+            normalized_usage,
+            "output_tokens",
+            "outputTokens",
+            "completion_tokens",
+            "completionTokens",
+        )
+        if output_tokens is None:
+            output_tokens = number_from(
+                parsed,
+                "output_tokens",
+                "outputTokens",
+                "completion_tokens",
+                "completionTokens",
+            )
+        if input_tokens is not None:
+            normalized_usage["input_tokens"] = int(input_tokens)
+        if output_tokens is not None:
+            normalized_usage["output_tokens"] = int(output_tokens)
+        if normalized_usage:
+            parsed["usage"] = normalized_usage
+
+        cost = number_from(parsed, "total_cost_usd", "totalCostUsd", "cost_usd", "costUsd")
+        raw_cost = parsed.get("cost")
+        if cost is None and isinstance(raw_cost, dict):
+            cost = number_from(raw_cost, "usd", "total_usd", "totalCostUsd", "cost_usd")
+        if cost is not None:
+            parsed["total_cost_usd"] = float(cost)
+
+        turns = number_from(parsed, "num_turns", "numTurns", "turns")
+        if turns is not None:
+            parsed["num_turns"] = int(turns)
+
+        if "is_error" not in parsed:
+            parsed["is_error"] = parsed.get("type") == "error" or bool(parsed.get("error"))
+
+        result = parsed.get("result")
+        if isinstance(result, dict):
+            text = next(
+                (
+                    str(result[key])
+                    for key in ("text", "content", "message", "summary")
+                    if isinstance(result.get(key), str)
+                ),
+                "",
+            )
+            parsed["result"] = text
+        elif not isinstance(result, str):
+            text = next(
+                (
+                    str(parsed[key])
+                    for key in ("output", "text", "content", "message")
+                    if isinstance(parsed.get(key), str)
+                ),
+                "",
+            )
+            if text:
+                parsed["result"] = text
+
+        return parsed
 
     def execute(
         self,
@@ -722,7 +811,7 @@ class PiBackend(SubprocessBackend):
     """
 
     name = "pi"
-    default_command = ("pi", "--print", "{prompt}")
+    default_command = ("pi", "--print", "--mode", "json", "{prompt}")
     extra_env_names = PI_PROVIDER_ENV_NAMES
 
 

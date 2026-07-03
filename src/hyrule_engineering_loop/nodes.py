@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any, Iterable, cast
 
@@ -64,6 +65,21 @@ StateUpdate = dict[str, Any]
 # unchanged worktree diff (the Phase F no-progress kill criterion).
 STALL_ROUND_LIMIT = 3
 
+DEFAULT_ACCEPTANCE_CRITERIA: tuple[str, ...] = (
+    "The request is implemented within the allowed paths of each target repo.",
+    "All selected gates pass in the branch-backed worktree.",
+    "The diff introduces no secret material or denied content patterns.",
+)
+
+ACCEPTANCE_HEADING_RE = re.compile(
+    r"^\s{0,3}#{1,6}\s+acceptance(?:\s+criteria)?\s*$",
+    re.IGNORECASE,
+)
+MARKDOWN_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+\S+")
+LIST_ITEM_RE = re.compile(
+    r"^\s*(?:[-*+]\s+(?:\[[ xX]\]\s*)?|\d+[.)]\s+)(?P<text>.+?)\s*$"
+)
+
 ALL_ROLES: tuple[RoleName, ...] = (
     "network_architect",
     "systems_engineer",
@@ -81,6 +97,46 @@ ROLE_NODE_NAMES: dict[RoleName, str] = {
     "finops_integrity": "finops_integrity",
     "virtual_lab_chaos": "virtual_lab_chaos",
 }
+
+
+def _acceptance_criteria_from_request(request: str) -> list[str]:
+    """Extract deterministic acceptance criteria from an issue/request body."""
+    section_lines: list[str] = []
+    in_section = False
+    for line in request.splitlines():
+        if ACCEPTANCE_HEADING_RE.match(line):
+            in_section = True
+            continue
+        if in_section and MARKDOWN_HEADING_RE.match(line):
+            break
+        if in_section:
+            section_lines.append(line)
+
+    criteria: list[str] = []
+    for raw_line in section_lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = LIST_ITEM_RE.match(line)
+        if match:
+            text = match.group("text").strip()
+            if text:
+                criteria.append(text)
+            continue
+        if criteria and raw_line.startswith((" ", "\t")):
+            criteria[-1] = f"{criteria[-1]} {line}"
+        else:
+            criteria.append(line)
+    return criteria
+
+
+def _gate_selection_cwd(state: GraphState) -> Path | None:
+    for worktree in state.get("worktree_results") or []:
+        path = worktree.get("worktree_path") if isinstance(worktree, dict) else None
+        if path:
+            return Path(str(path))
+    root = state.get("workspace_root")
+    return Path(str(root)) if root else None
 
 ROLE_PROMPT_FILES_HINT: dict[RoleName, str] = {
     "network_architect": "role-network-architect/SKILL.md",
@@ -320,6 +376,9 @@ def planner_node(state: GraphState) -> StateUpdate:
             (line.strip() for line in request.splitlines() if line.strip()),
             "(no request text supplied)",
         )[:300]
+        acceptance_criteria = _acceptance_criteria_from_request(request) or list(
+            DEFAULT_ACCEPTANCE_CRITERIA
+        )
         spec = {
             "change_id": state["change_id"],
             "change_class": str(state["change_class"]),
@@ -335,11 +394,7 @@ def planner_node(state: GraphState) -> StateUpdate:
             "budget": dict(state.get("backend_budget") or DEFAULT_BUDGET),
             "intake_source": "operator",
             "intent": intent,
-            "acceptance_criteria": [
-                "The request is implemented within the allowed paths of each target repo.",
-                "All selected gates pass in the branch-backed worktree.",
-                "The diff introduces no secret material or denied content patterns.",
-            ],
+            "acceptance_criteria": acceptance_criteria,
             "non_goals": "Anything outside the allowed paths; unrelated refactors.",
             "rollback_sketch": state.get("rollback_plan")
             or "Discard the generated worktree and branch; no production state changes.",
@@ -791,7 +846,8 @@ def delegate_implementation_node(state: GraphState) -> StateUpdate:
         )
     if not state.get("gate_commands") and (changed_paths or mutations):
         update["gate_commands"] = select_gate_commands_for_mutations(
-            changed_paths or list(mutations)
+            changed_paths or list(mutations),
+            cwd=_gate_selection_cwd(state),
         )
     return with_trace(
         "delegate_implementation",

@@ -299,6 +299,43 @@ def test_daemon_cli_per_run_budget_flags() -> None:
     assert args.reliability_decision_author == ["trusted-governor"]
 
 
+def test_daemon_issue_budget_label_widens_backend_budget(tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+    repo = "AS215932/hyrule-cloud"
+
+    def runner(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"final_state": {}, "state_path": str(tmp_path / "state.json")}
+
+    config = DaemonConfig(
+        repos=(repo,),
+        state_dir=tmp_path / "state",
+        output_root=tmp_path / "runs",
+        max_iterations_per_run=20,
+        max_wall_clock_minutes_per_run=45,
+        max_cost_usd_per_run=5.0,
+    )
+    gh = FakeGh(
+        {
+            "issue list": _approved_issue_json(
+                1,
+                repo=repo,
+                labels=["loop:approved", "loop:budget-xl"],
+            ),
+            "issue view": json.dumps({"body": "## Context\nfeature-class run\n"}),
+        }
+    )
+
+    daemon_once(config, client=gh, feature_runner=runner)
+
+    assert captured["backend_budget"] == {
+        "max_iterations": 80,
+        "max_wall_clock_minutes": 180,
+        "max_cost_usd": 20.0,
+        "tier": "xl",
+    }
+
+
 def test_daemon_defaults_to_core_repos_and_low_and_slow_budget() -> None:
     config = DaemonConfig()
     assert config.repos == CORE_REPOS
