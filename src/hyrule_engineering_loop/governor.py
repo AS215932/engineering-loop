@@ -716,7 +716,8 @@ def classify_issue_intent(
     legal = _contains_any(text, ["legal", "terms of service", "contract", "liability"])
     compliance = _contains_any(text, ["compliance", "gdpr", "kyc", "aml", "audit requirement"])
     destructive = _contains_any(text, ["delete data", "drop table", "truncate", "destroy customer"])
-    production_routing = _contains_any(
+    production_network_infra = _is_production_network_infra(issue, text)
+    production_routing = production_network_infra or _contains_any(
         text,
         [
             "bgp",
@@ -756,6 +757,23 @@ def classify_issue_intent(
         expected_paths = ["compliance/"]
         blast_radius = "compliance"
         rationale = "compliance surfaces are Tier 4"
+    elif production_routing:
+        intent = (
+            "routing_policy"
+            if _contains_any(text, ["policy", "route-map", "prefix-list"])
+            else "production_network"
+        )
+        risk_tier = 4 if _contains_any(text, ["core routing", "peering strategy"]) else 3
+        domains = ["production_network", "routing_policy"]
+        expected_paths = (
+            ["ansible/inventory/", "ansible/roles/", "docs/", "monitoring/"]
+            if production_network_infra
+            else ["host_vars/", "group_vars/", "roles/", "frr/", "network/"]
+        )
+        services = ["production network"]
+        customers = ["customers"]
+        blast_radius = "production network"
+        rationale = "production network behavior requires human approval"
     elif _contains_any(text, ["runbook", "readme", "documentation", "docs", "typo"]):
         intent, risk_tier, domains = "runbook", 0, ["runbook", "docs"]
         expected_paths = ["docs/", "README.md"]
@@ -777,15 +795,6 @@ def classify_issue_intent(
         services = ["monitoring"]
         blast_radius = "operator monitoring"
         rationale = "monitoring/alert tuning is Tier 1"
-    elif production_routing:
-        intent = "routing_policy" if _contains_any(text, ["policy", "route-map", "prefix-list"]) else "production_network"
-        risk_tier = 4 if _contains_any(text, ["core routing", "peering strategy"]) else 3
-        domains = ["production_network", "routing_policy"]
-        expected_paths = ["host_vars/", "group_vars/", "roles/", "frr/", "network/"]
-        services = ["production network"]
-        customers = ["customers"]
-        blast_radius = "production network"
-        rationale = "production network behavior requires human approval"
     elif customer_config:
         intent, risk_tier, domains = "customer_provisioning", 3, ["customer_provisioning"]
         expected_paths = ["host_vars/", "group_vars/", "provisioning/", "scripts/"]
@@ -853,6 +862,14 @@ def decide_policy(
         denial_reasons.append("NOC LHP pointer was present but CaseService payload was not fetched")
         policy_rules.append("treat GitHub prose as untrusted for NOC LHP work")
         return "needs_context", None, denial_reasons, policy_rules
+    capability = _match_capability(classification, registry=registry, repo=issue.repo)
+    if _has_sensitive_gate(classification):
+        sensitive_denials = _sensitive_denials(classification, capability)
+        if sensitive_denials:
+            denial_reasons.extend(sensitive_denials)
+            policy_rules.append("deny sensitive domains unless a capability explicitly allows them")
+            return "needs_human", capability, denial_reasons, policy_rules
+
     if not classification.verification_method:
         denial_reasons.append("missing verification method")
         policy_rules.append("deny work without a verification method")
@@ -861,14 +878,6 @@ def decide_policy(
         denial_reasons.append("missing rollback plan")
         policy_rules.append("deny work without a rollback plan")
         return "needs_context", None, denial_reasons, policy_rules
-
-    capability = _match_capability(classification, registry=registry, repo=issue.repo)
-    if _has_sensitive_gate(classification):
-        sensitive_denials = _sensitive_denials(classification, capability)
-        if sensitive_denials:
-            denial_reasons.extend(sensitive_denials)
-            policy_rules.append("deny sensitive Tier 4 domains unless a capability explicitly allows them")
-            return "needs_human", capability, denial_reasons, policy_rules
 
     if capability is None:
         denial_reasons.append("no matching capability envelope")
@@ -1380,7 +1389,7 @@ def _sensitive_denials(
     if capability is None:
         denials: list[str] = []
         if classification.production_routing:
-            denials.append("production routing is not explicitly allowed")
+            denials.append("production network/routing is not explicitly allowed")
         if classification.secrets:
             denials.append("secrets are not explicitly allowed")
         if classification.billing:
@@ -1396,7 +1405,7 @@ def _sensitive_denials(
         return denials or ["sensitive domain has no explicit capability"]
     explicit_denials: list[str] = []
     if classification.production_routing and not capability.allows_production_routing:
-        explicit_denials.append("production routing is not explicitly allowed")
+        explicit_denials.append("production network/routing is not explicitly allowed")
     if classification.secrets and not capability.allows_secrets:
         explicit_denials.append("secrets are not explicitly allowed")
     if classification.billing and not capability.allows_billing:
@@ -1410,6 +1419,39 @@ def _sensitive_denials(
     if classification.customer_impacting_config and not capability.allows_customer_config:
         explicit_denials.append("customer-impacting config is not explicitly allowed")
     return explicit_denials
+
+
+def _is_production_network_infra(issue: IssueSnapshot, text: str) -> bool:
+    if issue.repo != "AS215932/network-operations":
+        return False
+    network_terms = [
+        "authoritative dns",
+        "cloud-init",
+        "dns64",
+        "ipv6-only overlay",
+        "jool",
+        "knot",
+        "nat64",
+        "recursive resolver",
+        "resolver-only vm",
+        "resolver vms",
+        "resolv01",
+        "resolv02",
+        "systemd-resolved",
+        "unbound",
+    ]
+    change_terms = [
+        "add inventory",
+        "allocate stable ipv6",
+        "customer vm provisioning",
+        "firewall",
+        "generated resolver config",
+        "resolver endpoint",
+        "resolver-only vms",
+        "run unbound",
+        "separate authoritative dns",
+    ]
+    return _contains_any(text, network_terms) and _contains_any(text, change_terms)
 
 
 def _path_matches_any(path: str, patterns: list[str]) -> bool:
