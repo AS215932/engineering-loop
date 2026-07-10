@@ -565,6 +565,26 @@ def governor_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def capability_history_command(args: argparse.Namespace) -> int:
+    """Build the evidence report behind capability-registry success counts."""
+    from hyrule_engineering_loop.capability_history import build_capability_history
+
+    history = build_capability_history(
+        Path(args.state_dir_path).expanduser()
+        if args.state_dir_path
+        else ReliabilityGovernorConfig.state_dir,
+        client=GhCli(),
+        window_days=args.window_days,
+    )
+    payload = history.as_dict()
+    if args.write_proposal:
+        Path(args.write_proposal).write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
 def intake_scan_command(args: argparse.Namespace) -> int:
     client = GhCli()
     signals, skipped = mine_all_signals(repo=args.repo, client=client)
@@ -1002,6 +1022,17 @@ def build_parser() -> argparse.ArgumentParser:
         "governor",
         help_text="deprecated alias for reliability-governor",
     )
+
+    capability_history_parser = subparsers.add_parser(
+        "capability-history",
+        help="evidence report behind capability-registry success counts (Tier-2 auto-approval)",
+    )
+    capability_history_parser.add_argument("--state-dir-path", dest="state_dir_path")
+    capability_history_parser.add_argument("--window-days", type=int, default=90)
+    capability_history_parser.add_argument(
+        "--write-proposal", help="also write the report JSON (evidence for a registry promotion PR)"
+    )
+    capability_history_parser.set_defaults(func=capability_history_command)
 
     intake_parser = subparsers.add_parser("intake", help="signal mining and triage inbox")
     intake_subparsers = intake_parser.add_subparsers(dest="intake_command", required=True)
