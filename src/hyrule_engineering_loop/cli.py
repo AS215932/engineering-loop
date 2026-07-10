@@ -21,6 +21,12 @@ from hyrule_engineering_loop.feature import (
 )
 from hyrule_engineering_loop.agent_core_trace import emit_published_trace
 from hyrule_engineering_loop.graph import build_graph
+from hyrule_engineering_loop.insights import (
+    daemon_report_insight,
+    governor_report_insights,
+    intake_report_insights,
+    record_insights,
+)
 from hyrule_engineering_loop.governor import (
     ReliabilityGovernorConfig,
     reliability_governor_once,
@@ -487,6 +493,7 @@ def backend_canary_command(args: argparse.Namespace) -> int:
 
 DEFAULT_INTAKE_REPO = "AS215932/network-operations"
 DEFAULT_INTAKE_REPOS = list(CORE_REPOS)
+INTAKE_INSIGHT_STATE_DIR = Path(".engineering-loop-state/intake")
 
 
 def daemon_command(args: argparse.Namespace) -> int:
@@ -520,6 +527,13 @@ def daemon_command(args: argparse.Namespace) -> int:
         knowledge_learning_dir=args.knowledge_learning_dir,
     )
     report = daemon_once(config, client=GhCli())
+    insight = daemon_report_insight(report.as_dict())
+    if insight is not None:
+        record_insights(
+            [insight],
+            config.state_dir,
+            input_event={"run_id": report.change_id or "", "component": "engineering_daemon"},
+        )
     print(json.dumps(report.as_dict(), indent=2, sort_keys=True))
     return 0 if report.outcome not in {"error", "refused_ci"} else 1
 
@@ -542,6 +556,11 @@ def governor_command(args: argparse.Namespace) -> int:
         dry_run=args.dry_run,
     )
     report = reliability_governor_once(config, client=GhCli())
+    record_insights(
+        governor_report_insights(report, dry_run=config.dry_run),
+        config.state_dir,
+        input_event={"component": "reliability_governor"},
+    )
     print(json.dumps(report.as_dict(), indent=2, sort_keys=True))
     return 0
 
@@ -553,6 +572,11 @@ def intake_scan_command(args: argparse.Namespace) -> int:
         signals, repo=args.repo, client=client, dry_run=args.dry_run
     )
     report.skipped_miners = skipped
+    record_insights(
+        intake_report_insights(report, signals, repo=args.repo, dry_run=args.dry_run),
+        INTAKE_INSIGHT_STATE_DIR,
+        input_event={"component": "engineering_intake", "repo": args.repo},
+    )
     payload = report.as_dict()
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))

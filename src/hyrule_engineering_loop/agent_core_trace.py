@@ -74,6 +74,87 @@ def emit_published_trace(state: Mapping[str, Any], pr_results: list[dict[str, An
     return emit_loop_trace({**dict(state), "pr_status": "pushed", "pr_results": pr_results})
 
 
+def emit_insight_decision_envelopes(
+    insights: list[dict[str, Any]],
+    *,
+    input_event: Mapping[str, Any] | None = None,
+) -> int:
+    """Emit one LoopDecisionEnvelope TraceEvent per insight record.
+
+    Mirrors the NOC/SOC modules: the payload carries both the envelope and the
+    full validated ``InsightDecisionRecord`` (the envelope alone drops
+    sampling_class/utility/cost/support_facts, which the knowledge repo's
+    IDQ/CGS evaluation needs). Best-effort like everything else here.
+    """
+    if not enabled() or not insights:
+        return 0
+    try:
+        sink = _sink_from_env()
+        count = 0
+        for insight in insights:
+            event = _insight_decision_event(insight, input_event=dict(input_event or {}))
+            if sink.emit(event):
+                count += 1
+        return count
+    except Exception:
+        return 0
+
+
+def _insight_decision_event(insight: Mapping[str, Any], *, input_event: dict[str, Any]) -> Any:
+    contracts = importlib.import_module("agent_core.contracts")
+    TraceEvent = getattr(contracts, "TraceEvent")
+    LoopDecisionEnvelope = getattr(contracts, "LoopDecisionEnvelope")
+    InsightDecisionRecord = getattr(contracts, "InsightDecisionRecord")
+
+    validated = InsightDecisionRecord.model_validate(dict(insight))
+    envelope = LoopDecisionEnvelope(
+        envelope_id=(
+            f"ldec_eng_{_stable_hash([validated.insight_id, validated.fingerprint, validated.action_selected])}"
+        ),
+        loop="engineering",
+        environment="production",
+        graph_id="engineering-loop",
+        node_id="insight_stream",
+        agent_role="engineering_loop",
+        run_id=_string_or_none(input_event.get("run_id")) or validated.run_id,
+        trace_id=validated.trace_id,
+        input_event={
+            **input_event,
+            "candidate_type": validated.candidate_type,
+            "candidate_source": validated.candidate_source,
+        },
+        retrieved_context=validated.evidence_refs,
+        decision=validated.action_selected,
+        evidence_refs=validated.evidence_refs,
+        proposed_action={
+            "candidate_type": validated.candidate_type,
+            "candidate_source": validated.candidate_source,
+            "why_now": validated.why_now,
+            "support_fact_count": len(validated.support_facts),
+        },
+        human_outcome=validated.human_feedback,
+        governance=validated.governance,
+        insight_id=validated.insight_id,
+        case_id=validated.case_id,
+        fingerprint=validated.fingerprint,
+        policy_version=validated.policy_version,
+    )
+    return TraceEvent(
+        event_type="loop_decision_envelope",
+        graph_id="engineering-loop",
+        node_id="loop_decision_envelope",
+        agent_role="engineering_loop",
+        environment="production",
+        run_id=envelope.run_id,
+        trace_id=envelope.trace_id,
+        summary=f"Engineering loop decision envelope for {validated.insight_id}",
+        payload={
+            "loop_decision_envelope": envelope.model_dump(mode="json"),
+            "insight_decision_record": validated.model_dump(mode="json"),
+        },
+    )
+
+
 def _trace_payload(state: Mapping[str, Any]) -> dict[str, Any]:
     payload = dict(state)
     pr_results = state.get("pr_results")

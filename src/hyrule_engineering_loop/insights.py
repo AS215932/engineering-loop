@@ -9,12 +9,51 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
 InsightAction = Literal["notify", "question", "draft", "stay_silent"]
 SamplingClass = Literal["surfaced", "withheld_logged", "sampled_quiet_interval"]
+
+# Master switch for production insight recording (ledger + envelope emission).
+# The builders below stay pure/testable; only record_insights() consults this.
+INSIGHT_RECORDS_ENV = "HYRULE_ENGINEERING_INSIGHT_RECORDS"
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def insight_records_enabled() -> bool:
+    return os.environ.get(INSIGHT_RECORDS_ENV, "").strip().lower() in _TRUTHY
+
+
+def record_insights(
+    records: list[dict[str, Any]],
+    state_dir: Path,
+    *,
+    input_event: dict[str, Any] | None = None,
+) -> int:
+    """Persist records to the private ledger and emit decision envelopes.
+
+    Flag-gated by ``HYRULE_ENGINEERING_INSIGHT_RECORDS`` and strictly
+    best-effort: a ledger or delivery failure only loses observability.
+    Returns the count delivered to at least one sink.
+    """
+    if not insight_records_enabled() or not records:
+        return 0
+    for record in records:
+        try:
+            write_insight_record(record, state_dir)
+        except Exception:  # noqa: BLE001 - one bad record must not drop the rest
+            continue
+    try:
+        from hyrule_engineering_loop import agent_core_trace
+
+        return agent_core_trace.emit_insight_decision_envelopes(
+            records, input_event=input_event or {}
+        )
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def write_insight_record(record: dict[str, Any], state_dir: Path) -> Path:
@@ -88,9 +127,16 @@ def governor_insight_record(
     policy_version: str,
     action_selected: InsightAction | None = None,
     sampling_class: SamplingClass = "surfaced",
+    knowledge_context_pack_id: str = "",
+    knowledge_export_version: str = "",
 ) -> dict[str, Any]:
     action = action_selected or _action_for_routing_decision(routing_decision)
     why_now = "; ".join(reasons[:3]) or f"Governor routed issue as {routing_decision}."
+    knowledge_refs = (
+        [{"kind": "okf_context_pack", "ref": knowledge_context_pack_id}]
+        if knowledge_context_pack_id
+        else []
+    )
     return _base_record(
         fingerprint=_stable_hash(f"governor:{issue_id}:{routing_decision}"),
         sampling_class=sampling_class,
@@ -99,7 +145,14 @@ def governor_insight_record(
         action_selected=action,
         why_now=why_now,
         support_facts=[title, routing_decision, *reasons[:6]],
-        evidence_refs=[{"kind": "github_issue", "ref": issue_id}, *[{"kind": "label", "ref": label} for label in labels]],
+        evidence_refs=[
+            {"kind": "github_issue", "ref": issue_id},
+            *knowledge_refs,
+            *[{"kind": "label", "ref": label} for label in labels],
+        ],
+        tool_versions=(
+            {"knowledge_export": knowledge_export_version} if knowledge_export_version else {}
+        ),
         expected_utility={
             "total": 0.7 if action != "stay_silent" else 0.15,
             "components": {"routing_decision": 0.7 if action != "stay_silent" else 0.15},
@@ -157,6 +210,7 @@ def _base_record(
     confidence: float,
     policy_version: str,
     budget_context: dict[str, Any],
+    tool_versions: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     now = datetime.now(UTC).isoformat()
     return {
@@ -180,7 +234,7 @@ def _base_record(
         "confidence": confidence,
         "risk_class": "medium",
         "policy_version": policy_version,
-        "tool_versions": {},
+        "tool_versions": tool_versions or {},
         "budget_context": budget_context,
     }
 
@@ -237,3 +291,121 @@ def _why_not_other_actions(action_selected: InsightAction) -> dict[str, str]:
 
 def _stable_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+# --- report -> insight mappings (called from the CLI entry points) -----------
+
+_DAEMON_ACTIONS: dict[str, tuple[InsightAction, SamplingClass]] = {
+    "published": ("draft", "surfaced"),
+    "needs_triage": ("question", "surfaced"),
+    "idle": ("stay_silent", "sampled_quiet_interval"),
+    "over_budget": ("stay_silent", "withheld_logged"),
+    "refused_ci": ("stay_silent", "withheld_logged"),
+    "error": ("stay_silent", "withheld_logged"),
+}
+
+
+def daemon_report_insight(report: dict[str, Any]) -> dict[str, Any] | None:
+    """One insight per daemon cycle; ``locked``/unknown outcomes emit nothing
+    (another cycle is already reporting)."""
+    outcome = str(report.get("outcome") or "")
+    mapped = _DAEMON_ACTIONS.get(outcome)
+    if mapped is None:
+        return None
+    action, sampling = mapped
+    issue = report.get("issue") or {}
+    issue_ref = str(issue.get("url") or issue.get("issue_id") or "")
+    why_now = f"daemon cycle {outcome}" + (f": {report['detail']}" if report.get("detail") else "")
+    budget_context: dict[str, Any] = {
+        "outcome": outcome,
+        "cost_usd": report.get("cost_usd", 0.0),
+    }
+    if report.get("pr_url"):
+        budget_context["pr_url"] = report["pr_url"]
+    return daemon_insight_record(
+        action_selected=action,
+        sampling_class=sampling,
+        why_now=why_now[:300],
+        issue_ref=issue_ref,
+        budget_context=budget_context,
+    )
+
+
+def governor_report_insights(report: Any, *, dry_run: bool) -> list[dict[str, Any]]:
+    """One insight per fresh Reliability Governor decision.
+
+    ``skipped`` entries ("<issue_id>: unchanged decision ...") are the
+    governor's dedup — an unchanged decision is not a new insight.
+    """
+    skipped_ids = {str(entry).split(":", 1)[0] for entry in getattr(report, "skipped", [])}
+    records: list[dict[str, Any]] = []
+    for decision in getattr(report, "records", []):
+        issue_id = str(getattr(decision, "issue_id", ""))
+        if issue_id in skipped_ids:
+            continue
+        reasons = list(getattr(decision, "denial_reasons", []) or []) or list(
+            getattr(decision, "policy_rules", []) or []
+        )
+        # Issue prose is untrusted (LHP rule); identify the issue structurally.
+        title = f"{getattr(decision, 'repo', '')}#{getattr(decision, 'issue_number', '')} {getattr(decision, 'intent_type', '')}".strip()
+        records.append(
+            governor_insight_record(
+                issue_id=issue_id,
+                title=title,
+                routing_decision=str(getattr(decision, "routing_decision", "")),
+                reasons=[str(reason) for reason in reasons],
+                labels=[str(label) for label in getattr(decision, "labels_to_add", []) or []],
+                policy_version=str(getattr(decision, "schema_version", "governor")),
+                sampling_class="withheld_logged" if dry_run else "surfaced",
+                knowledge_context_pack_id=str(getattr(decision, "knowledge_context_pack_id", "")),
+                knowledge_export_version=str(getattr(decision, "knowledge_export_version", "")),
+            )
+        )
+    return records
+
+
+def intake_report_insights(
+    report: Any, signals: list[Any], *, repo: str, dry_run: bool
+) -> list[dict[str, Any]]:
+    """Filed signals surface as drafts; fingerprint-deduped ones are explicit
+    silence (the open issue already carries the information)."""
+    by_fingerprint = {getattr(signal, "fingerprint", ""): signal for signal in signals}
+    records: list[dict[str, Any]] = []
+    for entry in getattr(report, "filed", []):
+        signal = by_fingerprint.get(str(entry.get("fingerprint") or ""))
+        records.append(
+            signal_insight_record(
+                repo=repo,
+                source=str(entry.get("source") or "intake"),
+                identifier=str(entry.get("fingerprint") or ""),
+                title=str(entry.get("title") or ""),
+                context=str(getattr(signal, "context", "") or "")[:300],
+                action_items=list(getattr(signal, "action_items", []) or []),
+                related=list(getattr(signal, "related", []) or []),
+                fingerprint=str(entry.get("fingerprint") or ""),
+                action_selected="draft",
+                sampling_class="withheld_logged" if dry_run else "surfaced",
+                why_now="new mined signal filed as loop:candidate"
+                + (" (dry-run, nothing filed)" if dry_run else ""),
+                issue_ref=str(entry.get("url") or ""),
+            )
+        )
+    for entry in getattr(report, "deduplicated", []):
+        signal = by_fingerprint.get(str(entry.get("fingerprint") or ""))
+        records.append(
+            signal_insight_record(
+                repo=repo,
+                source=str(getattr(signal, "source", "") or "intake"),
+                identifier=str(entry.get("fingerprint") or ""),
+                title=str(entry.get("title") or ""),
+                context="",
+                action_items=[],
+                related=[],
+                fingerprint=str(entry.get("fingerprint") or ""),
+                action_selected="stay_silent",
+                sampling_class="withheld_logged",
+                why_now=f"fingerprint dedupe: open issue #{entry.get('existing_issue')}",
+                issue_ref=str(entry.get("existing_issue") or ""),
+            )
+        )
+    return records
