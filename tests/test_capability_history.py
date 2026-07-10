@@ -128,3 +128,66 @@ def test_build_history_aggregates_and_proposal(tmp_path: Path) -> None:
     payload = history.as_dict()
     assert payload["policy_version"] == "reliability-governor.tier2-history.v1"
     assert len(payload["evidence"]) == 2
+
+
+class RaisingRevertGh(FakeGh):
+    def run(self, args: list[str]) -> str:
+        joined = " ".join(args)
+        if "Revert" in joined:
+            raise RuntimeError("rate limited")
+        return super().run(args)
+
+
+def test_outcome_search_requires_closing_keyword() -> None:
+    issue_url = "https://github.com/AS215932/network-operations/issues/2"
+    gh = FakeGh({issue_url: _merged_pr(7)})
+    pr_outcome_for_issue(gh, repo="AS215932/network-operations", issue_url=issue_url)
+    searches = [args[args.index("--search") + 1] for args in gh.calls if "--search" in args]
+    # the PR lookup must require the closing keyword, not a bare URL mention
+    assert searches[0] == f'"Closes {issue_url}" in:body'
+
+
+def test_revert_detected_in_github_button_body_form() -> None:
+    issue_url = "https://github.com/AS215932/network-operations/issues/2"
+    gh = FakeGh(
+        {
+            issue_url: _merged_pr(7),
+            "Reverts AS215932/network-operations#7": json.dumps([{"number": 9}]),
+        }
+    )
+    outcome, _url, reason = pr_outcome_for_issue(
+        gh, repo="AS215932/network-operations", issue_url=issue_url
+    )
+    assert outcome == "failure"
+    assert "revert" in reason
+
+
+def test_revert_lookup_failure_is_unknown_not_success() -> None:
+    issue_url = "https://github.com/AS215932/network-operations/issues/2"
+    gh = RaisingRevertGh({issue_url: _merged_pr(7)})
+    outcome, _url, reason = pr_outcome_for_issue(
+        gh, repo="AS215932/network-operations", issue_url=issue_url
+    )
+    assert outcome == "pending"
+    assert "unknown" in reason
+
+
+def test_newest_pr_sorts_numerically_not_lexicographically() -> None:
+    issue_url = "https://github.com/AS215932/network-operations/issues/2"
+    closed_99_merged_100 = json.dumps(
+        [
+            {"number": 99, "state": "CLOSED", "url": "u99", "mergedAt": None},
+            {
+                "number": 100,
+                "state": "MERGED",
+                "url": "u100",
+                "mergedAt": "2026-07-02T00:00:00Z",
+                "mergedBy": {"login": "svag"},
+            },
+        ]
+    )
+    gh = FakeGh({issue_url: closed_99_merged_100})
+    outcome, pr_url, _reason = pr_outcome_for_issue(
+        gh, repo="AS215932/network-operations", issue_url=issue_url
+    )
+    assert (outcome, pr_url) == ("success", "u100")

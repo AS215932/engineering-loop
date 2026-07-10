@@ -114,7 +114,11 @@ def load_decision_records(state_dir: Path, *, window_days: int = DEFAULT_WINDOW_
 
 
 def pr_outcome_for_issue(client: GhClient, *, repo: str, issue_url: str) -> tuple[str, str, str]:
-    """(outcome, pr_url, reason) for the newest PR closing this issue."""
+    """(outcome, pr_url, reason) for the newest PR CLOSING this issue.
+
+    The search requires the closing keyword the daemon writes verbatim
+    (``Closes <issue_url>``), so PRs that merely mention the issue as related
+    context are never counted as its outcome."""
     try:
         raw = client.run(
             [
@@ -125,7 +129,7 @@ def pr_outcome_for_issue(client: GhClient, *, repo: str, issue_url: str) -> tupl
                 "--state",
                 "all",
                 "--search",
-                f"{issue_url} in:body",
+                f'"Closes {issue_url}" in:body',
                 "--json",
                 "number,state,url,mergedAt,mergedBy,title",
                 "--limit",
@@ -136,8 +140,8 @@ def pr_outcome_for_issue(client: GhClient, *, repo: str, issue_url: str) -> tupl
     except Exception as exc:
         return "none", "", f"pr lookup failed: {exc.__class__.__name__}"
     if not isinstance(rows, list) or not rows:
-        return "none", "", "no PR references the issue"
-    rows.sort(key=lambda row: str(row.get("number") or 0), reverse=True)
+        return "none", "", "no PR closes the issue"
+    rows.sort(key=lambda row: int(row.get("number") or 0), reverse=True)
     pr = rows[0]
     pr_url = str(pr.get("url") or "")
     state = str(pr.get("state") or "").upper()
@@ -148,35 +152,48 @@ def pr_outcome_for_issue(client: GhClient, *, repo: str, issue_url: str) -> tupl
     merged_by = str((pr.get("mergedBy") or {}).get("login") or "")
     if merged_by.endswith("[bot]"):
         return "pending", pr_url, f"merged by bot ({merged_by}); needs human-merge evidence"
-    if _was_reverted(client, repo=repo, pr_number=int(pr.get("number") or 0)):
+    reverted = _was_reverted(client, repo=repo, pr_number=int(pr.get("number") or 0))
+    if reverted is None:
+        # Unknown revert state must never manufacture a success for a
+        # zero-failure history gate.
+        return "pending", pr_url, "revert lookup failed; outcome unknown"
+    if reverted:
         return "failure", pr_url, "a merged revert references this PR"
     return "success", pr_url, f"merged by {merged_by or 'human'} behind required checks"
 
 
-def _was_reverted(client: GhClient, *, repo: str, pr_number: int) -> bool:
+def _was_reverted(client: GhClient, *, repo: str, pr_number: int) -> bool | None:
+    """True/False when determinable, None when the lookup itself failed.
+
+    Covers both revert forms: GitHub's revert button writes ``Reverts
+    <owner>/<repo>#N`` into the BODY (title is ``Revert "<original title>"``),
+    while hand-written reverts commonly carry ``Revert #N`` in the title."""
     if not pr_number:
         return False
-    try:
-        raw = client.run(
-            [
-                "pr",
-                "list",
-                "--repo",
-                repo,
-                "--state",
-                "merged",
-                "--search",
-                f"Revert #{pr_number} in:title",
-                "--json",
-                "number",
-                "--limit",
-                "3",
-            ]
-        )
-        rows = json.loads(raw or "[]")
-    except Exception:
-        return False
-    return bool(isinstance(rows, list) and rows)
+    for search in (f'"Reverts {repo}#{pr_number}" in:body', f'"Revert #{pr_number}" in:title'):
+        try:
+            raw = client.run(
+                [
+                    "pr",
+                    "list",
+                    "--repo",
+                    repo,
+                    "--state",
+                    "merged",
+                    "--search",
+                    search,
+                    "--json",
+                    "number",
+                    "--limit",
+                    "3",
+                ]
+            )
+            rows = json.loads(raw or "[]")
+        except Exception:
+            return None
+        if isinstance(rows, list) and rows:
+            return True
+    return False
 
 
 def build_capability_history(

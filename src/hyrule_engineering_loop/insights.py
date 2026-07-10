@@ -315,6 +315,10 @@ def daemon_report_insight(report: dict[str, Any]) -> dict[str, Any] | None:
     action, sampling = mapped
     issue = report.get("issue") or {}
     issue_ref = str(issue.get("url") or issue.get("issue_id") or "")
+    if not issue_ref and issue.get("repo") and issue.get("number"):
+        # daemon_once reports carry {repo, number, title} only — build the
+        # structural ref so the record stays joinable to the GitHub issue.
+        issue_ref = f"https://github.com/{issue['repo']}/issues/{issue['number']}"
     why_now = f"daemon cycle {outcome}" + (f": {report['detail']}" if report.get("detail") else "")
     budget_context: dict[str, Any] = {
         "outcome": outcome,

@@ -189,3 +189,15 @@ def test_emit_insight_decision_envelopes_ships_full_record(tmp_path, monkeypatch
     full = event["payload"]["insight_decision_record"]
     assert full["sampling_class"] == "sampled_quiet_interval"
     assert full["action_selected"] == "stay_silent"
+
+
+def test_daemon_insight_builds_structural_issue_ref() -> None:
+    record = daemon_report_insight(
+        _daemon_report(
+            outcome="needs_triage",
+            issue={"repo": "AS215932/network-operations", "number": 42, "title": "t"},
+        )
+    )
+    assert record is not None
+    ref = "https://github.com/AS215932/network-operations/issues/42"
+    assert record["evidence_refs"] == [{"kind": "github_issue", "ref": ref}]
