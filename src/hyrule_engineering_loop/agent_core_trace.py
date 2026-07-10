@@ -107,6 +107,9 @@ def _insight_decision_event(insight: Mapping[str, Any], *, input_event: dict[str
     InsightDecisionRecord = getattr(contracts, "InsightDecisionRecord")
 
     validated = InsightDecisionRecord.model_validate(dict(insight))
+    # Correlate with the daemon/governor cycle when the insight carries no
+    # explicit trace id, so consumers can join the stream back to its run.
+    trace_id = validated.trace_id or _string_or_none(input_event.get("run_id"))
     envelope = LoopDecisionEnvelope(
         envelope_id=(
             f"ldec_eng_{_stable_hash([validated.insight_id, validated.fingerprint, validated.action_selected])}"
@@ -117,7 +120,7 @@ def _insight_decision_event(insight: Mapping[str, Any], *, input_event: dict[str
         node_id="insight_stream",
         agent_role="engineering_loop",
         run_id=_string_or_none(input_event.get("run_id")) or validated.run_id,
-        trace_id=validated.trace_id,
+        trace_id=trace_id,
         input_event={
             **input_event,
             "candidate_type": validated.candidate_type,
@@ -151,6 +154,10 @@ def _insight_decision_event(insight: Mapping[str, Any], *, input_event: dict[str
         payload={
             "loop_decision_envelope": envelope.model_dump(mode="json"),
             "insight_decision_record": validated.model_dump(mode="json"),
+            # support_facts carry issue/signal titles — LHP-untrusted text —
+            # so the payload gets the same guard fields as the loop traces.
+            "untrusted_loop_text": True,
+            "model_consumption_allowed": False,
         },
     )
 

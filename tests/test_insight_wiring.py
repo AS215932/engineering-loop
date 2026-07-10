@@ -186,6 +186,10 @@ def test_emit_insight_decision_envelopes_ships_full_record(tmp_path, monkeypatch
     assert event["event_type"] == "loop_decision_envelope"
     envelope = event["payload"]["loop_decision_envelope"]
     assert envelope["loop"] == "engineering"
+    # untrusted-text guard fields + run correlation when no explicit trace id
+    assert event["payload"]["untrusted_loop_text"] is True
+    assert event["payload"]["model_consumption_allowed"] is False
+    assert envelope["trace_id"] == "cycle-1"
     full = event["payload"]["insight_decision_record"]
     assert full["sampling_class"] == "sampled_quiet_interval"
     assert full["action_selected"] == "stay_silent"
