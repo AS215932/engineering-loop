@@ -698,6 +698,10 @@ def daemon_once(
     publisher: Publisher | None = None,
     discord_poster: Poster | None = None,
     icinga_poster: Poster | None = None,
+    approved_item: IntakeItem | None = None,
+    approved_body: str | None = None,
+    approval_scope_override: ReliabilityApprovalScope | None = None,
+    change_id_override: str | None = None,
 ) -> DaemonReport:
     """Run one autonomous cycle: pick one approved item, run, publish or journal."""
     started = time.monotonic()
@@ -740,7 +744,11 @@ def daemon_once(
                 icinga_poster,
             )
 
-        queue = list_issues_with_label(list(config.repos), APPROVED_LABEL, client=client)
+        queue = (
+            [approved_item]
+            if approved_item is not None
+            else list_issues_with_label(list(config.repos), APPROVED_LABEL, client=client)
+        )
         if not queue:
             return _finish(
                 DaemonReport(outcome="idle", detail="approved queue is empty"),
@@ -749,18 +757,32 @@ def daemon_once(
             )
         item = queue[0]
         change_class, risk = classify_issue(item)
-        change_id = _change_id_for(item)
-        body = _issue_body(item, client=client)
+        change_id = change_id_override or _change_id_for(item)
+        body = approved_body if approved_body is not None else _issue_body(item, client=client)
         repo_name = repo_name_for_issue(item)
         static_allowed_paths = list(config.allowed_paths_by_repo.get(repo_name, config.allowed_paths))
-        effective_allowed_paths, approval_scope, approval_error = _approved_allowed_paths(
-            item,
-            client=client,
-            current_body=body,
-            static_allowed_paths=static_allowed_paths,
-            require_reliability_decision=config.require_reliability_decision,
-            trusted_authors=config.reliability_decision_authors,
-        )
+        effective_allowed_paths: list[str] | None
+        approval_scope: ReliabilityApprovalScope | None
+        approval_error: str | None
+        if approval_scope_override is not None:
+            effective_allowed_paths = _intersect_allowed_paths(
+                static_allowed_paths, approval_scope_override.allowed_paths
+            )
+            approval_scope = approval_scope_override
+            approval_error = (
+                None
+                if effective_allowed_paths
+                else "coordinator approval has no paths within daemon allowlist"
+            )
+        else:
+            effective_allowed_paths, approval_scope, approval_error = _approved_allowed_paths(
+                item,
+                client=client,
+                current_body=body,
+                static_allowed_paths=static_allowed_paths,
+                require_reliability_decision=config.require_reliability_decision,
+                trusted_authors=config.reliability_decision_authors,
+            )
         if approval_error is not None or effective_allowed_paths is None:
             return _finish(
                 DaemonReport(
@@ -887,7 +909,11 @@ def daemon_once(
                 remote=config.remote,
                 commit_message=f"{change_id}: {item.title}",
                 pr_title=item.title,
-                pr_body=f"Closes {item.url}",
+                pr_body=(
+                    f"Coordinator handoff: {item.url}"
+                    if item.number == 0
+                    else f"Closes {item.url}"
+                ),
                 pr_labels=[],
                 pr_reviewers=[],
                 create_github_pr=True,

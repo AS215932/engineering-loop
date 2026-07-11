@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 from pathlib import Path
 from typing import Any, cast
@@ -526,7 +527,15 @@ def daemon_command(args: argparse.Namespace) -> int:
         knowledge_context=_knowledge_context_config(args),
         knowledge_learning_dir=args.knowledge_learning_dir,
     )
-    report = daemon_once(config, client=GhCli())
+    from hyrule_engineering_loop.coordination import (
+        coordinator_daemon_once,
+        coordinator_enabled,
+    )
+
+    if coordinator_enabled():
+        report = asyncio.run(coordinator_daemon_once(config, gh_client=GhCli()))
+    else:
+        report = daemon_once(config, client=GhCli())
     insight = daemon_report_insight(report.as_dict())
     if insight is not None:
         record_insights(
