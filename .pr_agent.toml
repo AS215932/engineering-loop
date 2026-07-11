@@ -1,0 +1,48 @@
+# PR-Agent (advisory) configuration for AS215932/engineering-loop.
+# Replaces hosted Sourcery. Runs only on the unprivileged hyrule-public-pr
+# runner with read/comment-only perms, on our OpenRouter key.
+# Design: network-operations/docs/ci/pr-agent.md.
+
+[config]
+git_provider = "github"
+# deepseek-v4-flash / minimax-m2.7 are custom models -> need custom_model_max_tokens.
+model = "openrouter/deepseek/deepseek-v4-flash"
+fallback_models = ["openrouter/minimax/minimax-m2.7"]
+custom_model_max_tokens = 128000
+temperature = 0.2
+use_repo_settings_file = true
+publish_output = true
+
+[github_action_config]
+auto_review = true
+auto_describe = false
+auto_improve = true
+
+[pr_reviewer]
+require_security_review = true
+require_tests_review = true
+require_score_review = true
+require_estimate_effort_to_review = true
+extra_instructions = """
+This is engineering-loop: the autonomous change-implementation runtime
+(LangGraph daemon + Reliability Governor) that turns approved GitHub issues
+into draft PRs inside guarded worktrees. HIGHEST RISK is autonomy-boundary
+erosion. Flag, with specifics:
+- anything that could merge, push to protected branches, or apply production
+  changes (the loop stops at a DRAFT PR — that invariant is absolute);
+- consumption of issues without the loop:approved label, Governor
+  tier/capability-envelope weakening, or auto-approval beyond Tier 0/1 without
+  the success-history evidence path;
+- path-allowlist / denied_path_globs / denied_content_patterns bypasses in
+  policy or worktree handling; secrets reaching prompts, logs, or artifacts;
+- LHP trust violations: issue prose treated as trusted instead of the
+  HMAC-fetched payload, pointer-hash checks skipped, callbacks setting
+  verified/resolved (NOC/SOC own closure);
+- budget/backstop weakening (runs/cost per day, CI-refusal, singleton lock);
+- unpinned GitHub Actions, broad GITHUB_TOKEN permissions, added
+  pull_request_target, or pull_request jobs on privileged runner labels.
+Do not restate the diff; surface risk, invariant breaks, missing tests.
+"""
+
+[pr_description]
+publish_description_as_comment = true

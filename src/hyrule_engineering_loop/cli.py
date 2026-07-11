@@ -21,6 +21,12 @@ from hyrule_engineering_loop.feature import (
 )
 from hyrule_engineering_loop.agent_core_trace import emit_published_trace
 from hyrule_engineering_loop.graph import build_graph
+from hyrule_engineering_loop.insights import (
+    daemon_report_insight,
+    governor_report_insights,
+    intake_report_insights,
+    record_insights,
+)
 from hyrule_engineering_loop.governor import (
     ReliabilityGovernorConfig,
     reliability_governor_once,
@@ -487,6 +493,7 @@ def backend_canary_command(args: argparse.Namespace) -> int:
 
 DEFAULT_INTAKE_REPO = "AS215932/network-operations"
 DEFAULT_INTAKE_REPOS = list(CORE_REPOS)
+INTAKE_INSIGHT_STATE_DIR = Path(".engineering-loop-state/intake")
 
 
 def daemon_command(args: argparse.Namespace) -> int:
@@ -520,6 +527,13 @@ def daemon_command(args: argparse.Namespace) -> int:
         knowledge_learning_dir=args.knowledge_learning_dir,
     )
     report = daemon_once(config, client=GhCli())
+    insight = daemon_report_insight(report.as_dict())
+    if insight is not None:
+        record_insights(
+            [insight],
+            config.state_dir,
+            input_event={"run_id": report.change_id or "", "component": "engineering_daemon"},
+        )
     print(json.dumps(report.as_dict(), indent=2, sort_keys=True))
     return 0 if report.outcome not in {"error", "refused_ci"} else 1
 
@@ -542,7 +556,32 @@ def governor_command(args: argparse.Namespace) -> int:
         dry_run=args.dry_run,
     )
     report = reliability_governor_once(config, client=GhCli())
+    record_insights(
+        governor_report_insights(report, dry_run=config.dry_run),
+        config.state_dir,
+        input_event={"component": "reliability_governor"},
+    )
     print(json.dumps(report.as_dict(), indent=2, sort_keys=True))
+    return 0
+
+
+def capability_history_command(args: argparse.Namespace) -> int:
+    """Build the evidence report behind capability-registry success counts."""
+    from hyrule_engineering_loop.capability_history import build_capability_history
+
+    history = build_capability_history(
+        Path(args.state_dir_path).expanduser()
+        if args.state_dir_path
+        else ReliabilityGovernorConfig.state_dir,
+        client=GhCli(),
+        window_days=args.window_days,
+    )
+    payload = history.as_dict()
+    if args.write_proposal:
+        Path(args.write_proposal).write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 
 
@@ -553,6 +592,11 @@ def intake_scan_command(args: argparse.Namespace) -> int:
         signals, repo=args.repo, client=client, dry_run=args.dry_run
     )
     report.skipped_miners = skipped
+    record_insights(
+        intake_report_insights(report, signals, repo=args.repo, dry_run=args.dry_run),
+        INTAKE_INSIGHT_STATE_DIR,
+        input_event={"component": "engineering_intake", "repo": args.repo},
+    )
     payload = report.as_dict()
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -978,6 +1022,17 @@ def build_parser() -> argparse.ArgumentParser:
         "governor",
         help_text="deprecated alias for reliability-governor",
     )
+
+    capability_history_parser = subparsers.add_parser(
+        "capability-history",
+        help="evidence report behind capability-registry success counts (Tier-2 auto-approval)",
+    )
+    capability_history_parser.add_argument("--state-dir-path", dest="state_dir_path")
+    capability_history_parser.add_argument("--window-days", type=int, default=90)
+    capability_history_parser.add_argument(
+        "--write-proposal", help="also write the report JSON (evidence for a registry promotion PR)"
+    )
+    capability_history_parser.set_defaults(func=capability_history_command)
 
     intake_parser = subparsers.add_parser("intake", help="signal mining and triage inbox")
     intake_subparsers = intake_parser.add_subparsers(dest="intake_command", required=True)

@@ -32,20 +32,23 @@ def enabled() -> bool:
 
 def _sink_from_env() -> Any:
     sink_mod = importlib.import_module("agent_core.tracing.sink")
-    path_configured = bool(os.environ.get(PATH_ENV, "").strip())
-    collector_configured = bool(os.environ.get(COLLECTOR_URL_ENV, "").strip())
-    if path_configured or collector_configured:
-        return sink_mod.sink_from_env(FLAG_ENV)
-
-    original_path = os.environ.get(PATH_ENV)
-    os.environ[PATH_ENV] = _DEFAULT_PATH
+    overlays: dict[str, str] = {}
+    if not os.environ.get(PATH_ENV, "").strip() and not os.environ.get(COLLECTOR_URL_ENV, "").strip():
+        overlays[PATH_ENV] = _DEFAULT_PATH
+    if not enabled() and _insight_records_enabled():
+        # sink_from_env gates on the master trace flag; the insight flag is a
+        # complete opt-in of its own, so satisfy the gate for this build only.
+        overlays[FLAG_ENV] = "1"
+    originals = {key: os.environ.get(key) for key in overlays}
+    os.environ.update(overlays)
     try:
         return sink_mod.sink_from_env(FLAG_ENV)
     finally:
-        if original_path is None:
-            os.environ.pop(PATH_ENV, None)
-        else:
-            os.environ[PATH_ENV] = original_path
+        for key, original in originals.items():
+            if original is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = original
 
 
 def emit_loop_trace(state: Mapping[str, Any]) -> int:
@@ -72,6 +75,103 @@ def emit_published_trace(state: Mapping[str, Any], pr_results: list[dict[str, An
     if not pr_results:
         return 0
     return emit_loop_trace({**dict(state), "pr_status": "pushed", "pr_results": pr_results})
+
+
+def emit_insight_decision_envelopes(
+    insights: list[dict[str, Any]],
+    *,
+    input_event: Mapping[str, Any] | None = None,
+) -> int:
+    """Emit one LoopDecisionEnvelope TraceEvent per insight record.
+
+    Mirrors the NOC/SOC modules: the payload carries both the envelope and the
+    full validated ``InsightDecisionRecord`` (the envelope alone drops
+    sampling_class/utility/cost/support_facts, which the knowledge repo's
+    IDQ/CGS evaluation needs). Best-effort like everything else here.
+    """
+    if not insights or not (enabled() or _insight_records_enabled()):
+        return 0
+    try:
+        sink = _sink_from_env()
+        count = 0
+        for insight in insights:
+            event = _insight_decision_event(insight, input_event=dict(input_event or {}))
+            if sink.emit(event):
+                count += 1
+        return count
+    except Exception:
+        return 0
+
+
+def _insight_records_enabled() -> bool:
+    # HYRULE_ENGINEERING_INSIGHT_RECORDS=1 is a complete opt-in for insight
+    # envelopes: operators must not need to discover the trace master flag
+    # too, or the ledger and the trace sink silently diverge. The sink still
+    # honours the {FLAG_ENV}_COLLECTOR_URL/_PATH vars (JSONL fallback when
+    # neither is set).
+    return os.environ.get("HYRULE_ENGINEERING_INSIGHT_RECORDS", "").strip().lower() in _TRUTHY
+
+
+def _insight_decision_event(insight: Mapping[str, Any], *, input_event: dict[str, Any]) -> Any:
+    contracts = importlib.import_module("agent_core.contracts")
+    TraceEvent = getattr(contracts, "TraceEvent")
+    LoopDecisionEnvelope = getattr(contracts, "LoopDecisionEnvelope")
+    InsightDecisionRecord = getattr(contracts, "InsightDecisionRecord")
+
+    validated = InsightDecisionRecord.model_validate(dict(insight))
+    # Correlate with the daemon/governor cycle when the insight carries no
+    # explicit trace id, so consumers can join the stream back to its run.
+    trace_id = validated.trace_id or _string_or_none(input_event.get("run_id"))
+    envelope = LoopDecisionEnvelope(
+        envelope_id=(
+            f"ldec_eng_{_stable_hash([validated.insight_id, validated.fingerprint, validated.action_selected])}"
+        ),
+        loop="engineering",
+        environment="production",
+        graph_id="engineering-loop",
+        node_id="insight_stream",
+        agent_role="engineering_loop",
+        run_id=_string_or_none(input_event.get("run_id")) or validated.run_id,
+        trace_id=trace_id,
+        input_event={
+            **input_event,
+            "candidate_type": validated.candidate_type,
+            "candidate_source": validated.candidate_source,
+        },
+        retrieved_context=validated.evidence_refs,
+        decision=validated.action_selected,
+        evidence_refs=validated.evidence_refs,
+        proposed_action={
+            "candidate_type": validated.candidate_type,
+            "candidate_source": validated.candidate_source,
+            "why_now": validated.why_now,
+            "support_fact_count": len(validated.support_facts),
+        },
+        human_outcome=validated.human_feedback,
+        governance=validated.governance,
+        insight_id=validated.insight_id,
+        case_id=validated.case_id,
+        fingerprint=validated.fingerprint,
+        policy_version=validated.policy_version,
+    )
+    return TraceEvent(
+        event_type="loop_decision_envelope",
+        graph_id="engineering-loop",
+        node_id="loop_decision_envelope",
+        agent_role="engineering_loop",
+        environment="production",
+        run_id=envelope.run_id,
+        trace_id=envelope.trace_id,
+        summary=f"Engineering loop decision envelope for {validated.insight_id}",
+        payload={
+            "loop_decision_envelope": envelope.model_dump(mode="json"),
+            "insight_decision_record": validated.model_dump(mode="json"),
+            # support_facts carry issue/signal titles — LHP-untrusted text —
+            # so the payload gets the same guard fields as the loop traces.
+            "untrusted_loop_text": True,
+            "model_consumption_allowed": False,
+        },
+    )
 
 
 def _trace_payload(state: Mapping[str, Any]) -> dict[str, Any]:
