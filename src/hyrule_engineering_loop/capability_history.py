@@ -44,6 +44,7 @@ class CapabilityOutcome:
     pr_url: str
     outcome: str  # success | failure | pending | none
     reason: str
+    risk_tier: int = 0
 
 
 @dataclass
@@ -60,12 +61,26 @@ class CapabilityHistory:
         return dict(sorted(totals.items()))
 
     def registry_proposal(self) -> dict[str, Any]:
-        """Proposed success/failure counts per capability (report artifact)."""
-        proposal = {}
-        for capability, counts in self.aggregates().items():
+        """Proposed counts per capability (report artifact).
+
+        ``success_count`` counts only tier>=2 successes — the numbers exist to
+        unlock ``decide_policy``'s Tier-2 gate, so a streak of human-merged
+        Tier-0/1 work must not satisfy it. Lower-tier successes and
+        pending/unknown outcomes are reported alongside so the promotion-PR
+        reviewer sees exactly what the evidence covers (and what it doesn't).
+        """
+        proposal: dict[str, Any] = {}
+        for capability in sorted({outcome.capability for outcome in self.outcomes}):
+            rows = [outcome for outcome in self.outcomes if outcome.capability == capability]
             proposal[capability] = {
-                "success_count": counts.get("success", 0),
-                "failure_count": counts.get("failure", 0),
+                "success_count": sum(
+                    1 for row in rows if row.outcome == "success" and row.risk_tier >= 2
+                ),
+                "failure_count": sum(1 for row in rows if row.outcome == "failure"),
+                "lower_tier_success_count": sum(
+                    1 for row in rows if row.outcome == "success" and row.risk_tier < 2
+                ),
+                "pending_count": sum(1 for row in rows if row.outcome == "pending"),
             }
         return proposal
 
@@ -83,6 +98,7 @@ class CapabilityHistory:
                     "pr_url": item.pr_url,
                     "outcome": item.outcome,
                     "reason": item.reason,
+                    "risk_tier": item.risk_tier,
                 }
                 for item in self.outcomes
             ],
@@ -138,7 +154,9 @@ def pr_outcome_for_issue(client: GhClient, *, repo: str, issue_url: str) -> tupl
         )
         rows = json.loads(raw or "[]")
     except Exception as exc:
-        return "none", "", f"pr lookup failed: {exc.__class__.__name__}"
+        # Unknown, not absent: a rate-limited/auth-failed lookup must stay
+        # visible in the report instead of vanishing from the counts.
+        return "pending", "", f"pr lookup failed ({exc.__class__.__name__}); outcome unknown"
     if not isinstance(rows, list) or not rows:
         return "none", "", "no PR closes the issue"
     rows.sort(key=lambda row: int(row.get("number") or 0), reverse=True)
@@ -150,6 +168,10 @@ def pr_outcome_for_issue(client: GhClient, *, repo: str, issue_url: str) -> tupl
     if state == "CLOSED" and not pr.get("mergedAt"):
         return "failure", pr_url, "PR closed without merge"
     merged_by = str((pr.get("mergedBy") or {}).get("login") or "")
+    if not merged_by:
+        # mergedBy is nullable (deleted/unavailable actor) — no evidence of a
+        # human merge, so this must not count toward zero-failure history.
+        return "pending", pr_url, "merger unknown (mergedBy null); needs human-merge evidence"
     if merged_by.endswith("[bot]"):
         return "pending", pr_url, f"merged by bot ({merged_by}); needs human-merge evidence"
     reverted = _was_reverted(client, repo=repo, pr_number=int(pr.get("number") or 0))
@@ -217,6 +239,7 @@ def build_capability_history(
                 pr_url=pr_url,
                 outcome=outcome,
                 reason=reason,
+                risk_tier=int(record.risk_tier),
             )
         )
     return history

@@ -205,3 +205,51 @@ def test_daemon_insight_builds_structural_issue_ref() -> None:
     assert record is not None
     ref = "https://github.com/AS215932/network-operations/issues/42"
     assert record["evidence_refs"] == [{"kind": "github_issue", "ref": ref}]
+
+
+def test_intake_records_carry_issue_evidence_refs() -> None:
+    signal = SimpleNamespace(
+        fingerprint="fp1", source="ci_failures", context="ctx", action_items=[], related=[]
+    )
+    report = SimpleNamespace(
+        filed=[
+            {
+                "title": "T",
+                "fingerprint": "fp1",
+                "repo": "AS215932/network-operations",
+                "source": "ci_failures",
+                "url": "https://github.com/AS215932/network-operations/issues/42",
+            }
+        ],
+        deduplicated=[{"title": "Old", "fingerprint": "fp2", "existing_issue": 17}],
+    )
+    filed, deduped = intake_report_insights(
+        report, [signal], repo="AS215932/network-operations", dry_run=False
+    )
+    assert filed["evidence_refs"][0] == {
+        "kind": "github_issue",
+        "ref": "https://github.com/AS215932/network-operations/issues/42",
+    }
+    assert deduped["evidence_refs"][0] == {
+        "kind": "github_issue",
+        "ref": "https://github.com/AS215932/network-operations/issues/17",
+    }
+
+
+def test_insight_flag_alone_emits_envelopes(tmp_path, monkeypatch) -> None:
+    trace_path = tmp_path / "trace.jsonl"
+    monkeypatch.delenv(agent_core_trace.FLAG_ENV, raising=False)
+    monkeypatch.setenv("HYRULE_ENGINEERING_INSIGHT_RECORDS", "1")
+    monkeypatch.setenv(agent_core_trace.PATH_ENV, str(trace_path))
+    record = daemon_report_insight(_daemon_report(outcome="idle"))
+    assert record is not None
+    delivered = agent_core_trace.emit_insight_decision_envelopes(
+        [record], input_event={"run_id": "cycle-solo"}
+    )
+    # the insight flag is a complete opt-in: no second master flag required
+    assert delivered == 1
+    event = json.loads(trace_path.read_text(encoding="utf-8").strip())
+    assert event["payload"]["insight_decision_record"]["insight_id"] == record["insight_id"]
+    # and both flags off still emits nothing
+    monkeypatch.delenv("HYRULE_ENGINEERING_INSIGHT_RECORDS", raising=False)
+    assert agent_core_trace.emit_insight_decision_envelopes([record], input_event={}) == 0

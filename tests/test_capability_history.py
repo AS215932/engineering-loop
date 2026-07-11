@@ -124,7 +124,14 @@ def test_build_history_aggregates_and_proposal(tmp_path: Path) -> None:
     assert aggregates["success"] == 1
     assert aggregates["failure"] == 1
     proposal = history.registry_proposal()["tier0.docs-runbooks-tests"]
-    assert proposal == {"success_count": 1, "failure_count": 1}
+    # both records are tier-0, so the merged one is a lower-tier success and
+    # the Tier-2 gate count stays untouched
+    assert proposal == {
+        "success_count": 0,
+        "failure_count": 1,
+        "lower_tier_success_count": 1,
+        "pending_count": 0,
+    }
     payload = history.as_dict()
     assert payload["policy_version"] == "reliability-governor.tier2-history.v1"
     assert len(payload["evidence"]) == 2
@@ -191,3 +198,52 @@ def test_newest_pr_sorts_numerically_not_lexicographically() -> None:
         gh, repo="AS215932/network-operations", issue_url=issue_url
     )
     assert (outcome, pr_url) == ("success", "u100")
+
+
+def test_null_merged_by_is_pending_not_success() -> None:
+    issue_url = "https://github.com/AS215932/network-operations/issues/2"
+    merged_no_actor = json.dumps(
+        [
+            {
+                "number": 7,
+                "state": "MERGED",
+                "url": "u7",
+                "mergedAt": "2026-07-02T00:00:00Z",
+                "mergedBy": None,
+            }
+        ]
+    )
+    gh = FakeGh({issue_url: merged_no_actor})
+    outcome, _url, reason = pr_outcome_for_issue(
+        gh, repo="AS215932/network-operations", issue_url=issue_url
+    )
+    assert outcome == "pending"
+    assert "merger unknown" in reason
+
+
+def test_primary_lookup_failure_is_pending_and_reported() -> None:
+    class RaisingGh(FakeGh):
+        def run(self, args: list[str]) -> str:
+            raise RuntimeError("rate limited")
+
+    outcome, _url, reason = pr_outcome_for_issue(
+        RaisingGh({}), repo="AS215932/network-operations", issue_url="https://x/issues/2"
+    )
+    assert outcome == "pending"
+    assert "unknown" in reason
+
+
+def test_registry_proposal_counts_only_tier2_successes(tmp_path: Path) -> None:
+    write_decision_record(_record(2, created_at="2026-07-01T00:00:00Z"), tmp_path)  # tier 0
+    tier2 = _record(3, created_at="2026-07-02T00:00:00Z")
+    tier2 = tier2.model_copy(update={"risk_tier": 2, "record_id": "rdr_3b"})
+    write_decision_record(tier2, tmp_path)
+    gh = FakeGh({"issues/2": _merged_pr(7), "issues/3": _merged_pr(8), "Revert": "[]"})
+    history = build_capability_history(tmp_path, client=gh, window_days=90, now=NOW)
+    proposal = history.registry_proposal()["tier0.docs-runbooks-tests"]
+    # only the tier-2 success feeds the Tier-2 gate; the tier-0 one is reported
+    # separately, never mixed in
+    assert proposal["success_count"] == 1
+    assert proposal["lower_tier_success_count"] == 1
+    assert proposal["failure_count"] == 0
+    assert proposal["pending_count"] == 0

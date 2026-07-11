@@ -100,6 +100,10 @@ def signal_insight_record(
 ) -> dict[str, Any]:
     utility = _utility_for_signal(action_items=action_items, related=related, issue_ref=issue_ref)
     cost = _interruption_cost_for_action(action_selected=action_selected, why_now=why_now)
+    # The filed/deduped issue is the record's primary evidence — envelopes are
+    # built from evidence_refs, so it must live there (budget_context alone is
+    # not joinable downstream).
+    issue_refs = [{"kind": "github_issue", "ref": issue_ref}] if issue_ref else []
     return _base_record(
         fingerprint=fingerprint,
         sampling_class=sampling_class,
@@ -108,7 +112,11 @@ def signal_insight_record(
         action_selected=action_selected,
         why_now=why_now,
         support_facts=[title, context, *list(action_items)[:4]],
-        evidence_refs=[{"kind": "repo", "ref": repo}, *[{"kind": "related", "ref": item} for item in list(related)[:6]]],
+        evidence_refs=[
+            *issue_refs,
+            {"kind": "repo", "ref": repo},
+            *[{"kind": "related", "ref": item} for item in list(related)[:6]],
+        ],
         expected_utility=utility,
         interruption_cost=cost,
         confidence=0.75 if action_selected != "stay_silent" else 0.65,
@@ -396,6 +404,7 @@ def intake_report_insights(
         )
     for entry in getattr(report, "deduplicated", []):
         signal = by_fingerprint.get(str(entry.get("fingerprint") or ""))
+        existing = str(entry.get("existing_issue") or "")
         records.append(
             signal_insight_record(
                 repo=repo,
@@ -408,8 +417,8 @@ def intake_report_insights(
                 fingerprint=str(entry.get("fingerprint") or ""),
                 action_selected="stay_silent",
                 sampling_class="withheld_logged",
-                why_now=f"fingerprint dedupe: open issue #{entry.get('existing_issue')}",
-                issue_ref=str(entry.get("existing_issue") or ""),
+                why_now=f"fingerprint dedupe: open issue #{existing}",
+                issue_ref=f"https://github.com/{repo}/issues/{existing}" if existing else "",
             )
         )
     return records
