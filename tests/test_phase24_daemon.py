@@ -11,6 +11,7 @@ import pytest
 
 from hyrule_engineering_loop.daemon import (
     CORE_REPOS,
+    ICINGA_EXIT_STATUS,
     DaemonConfig,
     DaemonReport,
     acquire_lock,
@@ -719,8 +720,8 @@ def test_budget_exhaustion_journals_and_next_run_unaffected(
     assert report1.outcome == "needs_triage"
     assert report1.pr_url is None
     assert "budget exhausted" in report1.detail
-    assert report1.notifications == ["discord"]
-    assert "needs_triage" in discord[0]["content"]
+    assert report1.notifications == []
+    assert discord == []
 
     published: list[dict[str, Any]] = []
     report2 = daemon_once(
@@ -749,6 +750,24 @@ def test_daily_run_budget_stops_further_runs(tmp_path: Path) -> None:
     report = daemon_once(config, client=FakeGh({"issue list": "[]"}))
     assert report.outcome == "over_budget"
     assert "run budget" in report.detail
+
+
+@pytest.mark.parametrize("outcome", ["idle", "over_budget", "locked", "needs_triage", "refused_ci", "error"])
+def test_non_published_outcomes_do_not_duplicate_discord(
+    monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    monkeypatch.setenv("HYRULE_DISCORD_WEBHOOK", "https://discord.invalid/webhook")
+    monkeypatch.setenv("HYRULE_ICINGA_URL", "https://mon.invalid:5665")
+    monkeypatch.setenv("HYRULE_ICINGA_USER", "loop")
+    monkeypatch.setenv("HYRULE_ICINGA_PASSWORD", "secret")
+    discord: list[dict[str, Any]] = []
+    icinga: list[dict[str, Any]] = []
+    report = DaemonReport(outcome=outcome, detail="test outcome")
+
+    assert notify_discord(report, poster=lambda url, payload: discord.append(payload)) is False
+    assert notify_icinga(report, poster=lambda url, payload: icinga.append(payload)) is True
+    assert discord == []
+    assert icinga[0]["exit_status"] == ICINGA_EXIT_STATUS[outcome]
 
 
 # --- kill criterion: stall detection ----------------------------------------

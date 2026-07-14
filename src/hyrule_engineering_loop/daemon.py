@@ -306,7 +306,13 @@ def _default_http_post(url: str, payload: dict[str, Any]) -> None:
 
 
 def notify_discord(report: DaemonReport, *, poster: Poster | None = None) -> bool:
-    """One-line run summary to the configured Discord webhook."""
+    """Post only a newly published PR; Icinga owns failure case cards."""
+    # Idle/budget/lock outcomes are not actionable. Failures already enter the
+    # persistent AI case path via the passive Icinga result, so posting those
+    # here would create a duplicate. A published PR is the one direct message
+    # that represents a new operator action.
+    if report.outcome != "published":
+        return False
     webhook = os.environ.get("HYRULE_DISCORD_WEBHOOK")
     if not webhook:
         return False
@@ -326,7 +332,7 @@ ICINGA_EXIT_STATUS: dict[str, int] = {
     "published": 0,
     "idle": 0,
     "needs_triage": 1,
-    "over_budget": 1,
+    "over_budget": 0,
     "locked": 0,
     "refused_ci": 2,
     "error": 2,
