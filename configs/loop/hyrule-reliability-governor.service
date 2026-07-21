@@ -32,6 +32,7 @@ ExecStart=/opt/engineering-loop/.venv/bin/hyrule-engineering-loop reliability-go
     --repo AS215932/hyrule-network-proxy \
     --repo AS215932/as215932.net \
     --registry /opt/engineering-loop/configs/loop/capability-registry.yml \
+    --trusted-comment-author Svaag \
     --state-dir-path /var/lib/engineering-loop/reliability-governor \
     --knowledge-context \
     --knowledge-mcp-url http://127.0.0.1:8767/mcp \

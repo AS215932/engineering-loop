@@ -38,9 +38,11 @@ from hyrule_engineering_loop.lhp import (
     payload_hash,
     post_lhp_update,
     render_lhp_request,
+    validated_approval_scope,
 )
 from hyrule_engineering_loop.intake import (
     APPROVED_LABEL,
+    NEEDS_HUMAN_LABEL,
     GhClient,
     IntakeError,
     IntakeItem,
@@ -70,7 +72,9 @@ RELIABILITY_DECISION_MARKERS: tuple[str, ...] = (
     "reliability-governor-cdr:",
     "loop-governor-cdr:",
 )
-RELIABILITY_DECISION_SCHEMA_VERSION = "reliability-governor.cdr.v1"
+RELIABILITY_DECISION_SCHEMA_VERSIONS = frozenset(
+    {"reliability-governor.cdr.v1", "reliability-governor.cdr.v2"}
+)
 
 REPO_CHECKOUT_NAMES: dict[str, str] = {
     "engineering-loop": "engineering-loop",
@@ -189,6 +193,7 @@ class ReliabilityApprovalScope:
     record_id: str
     allowed_paths: tuple[str, ...]
     lhp_payload_hash: str | None = None
+    lhp_approval_scope_hash: str | None = None
 
 
 # --- lock ---------------------------------------------------------------
@@ -482,7 +487,7 @@ def _approval_scope_from_record(
     *,
     current_body: str,
 ) -> tuple[ReliabilityApprovalScope | None, str | None]:
-    if payload.get("schema_version") != RELIABILITY_DECISION_SCHEMA_VERSION:
+    if payload.get("schema_version") not in RELIABILITY_DECISION_SCHEMA_VERSIONS:
         return None, "Reliability Decision Record schema version is unsupported"
     try:
         issue_number = int(payload.get("issue_number", -1))
@@ -510,6 +515,7 @@ def _approval_scope_from_record(
         record_id=str(payload.get("record_id", "unknown")),
         allowed_paths=allowed_paths,
         lhp_payload_hash=_record_lhp_payload_hash(payload),
+        lhp_approval_scope_hash=_record_lhp_approval_scope_hash(payload),
     ), None
 
 
@@ -521,6 +527,16 @@ def _record_lhp_payload_hash(payload: dict[str, Any]) -> str | None:
     if len(value) < 12:
         return None
     if any(ch not in "0123456789abcdef" for ch in value):
+        return None
+    return value
+
+
+def _record_lhp_approval_scope_hash(payload: dict[str, Any]) -> str | None:
+    lhp = payload.get("lhp")
+    if not isinstance(lhp, dict):
+        return None
+    value = str(lhp.get("approval_scope_hash") or "").strip().lower()
+    if len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value):
         return None
     return value
 
@@ -597,19 +613,52 @@ def _approved_allowed_paths(
     return narrowed, scope, None
 
 
-def _lhp_payload_hash_error(
+def _lhp_approval_scope_hash_error(
     payload: dict[str, Any],
     scope: ReliabilityApprovalScope | None,
 ) -> str | None:
     if scope is None:
         return None
-    expected = scope.lhp_payload_hash
+    expected = scope.lhp_approval_scope_hash
     if expected is None:
-        return f"Reliability Decision Record {scope.record_id} has no LHP payload hash"
-    current = payload_hash(payload)
-    if current[: len(expected)] != expected:
-        return f"Reliability Decision Record {scope.record_id} LHP payload hash is stale"
+        return f"Reliability Decision Record {scope.record_id} has no LHP approval scope hash"
+    current = str(payload.get("approval_scope_hash") or "").strip().lower()
+    if current != expected:
+        return f"Reliability Decision Record {scope.record_id} LHP approval scope hash is stale"
     return None
+
+
+def _park_issue_for_human(item: IntakeItem, *, client: GhClient, attempts: int = 3) -> bool:
+    """Remove a completed attempt from the autonomous queue."""
+
+    for _ in range(max(1, attempts)):
+        try:
+            client.run(
+                [
+                    "issue",
+                    "edit",
+                    str(item.number),
+                    "--repo",
+                    item.repo,
+                    "--remove-label",
+                    APPROVED_LABEL,
+                    "--add-label",
+                    NEEDS_HUMAN_LABEL,
+                ]
+            )
+        except Exception:
+            continue
+        return True
+    return False
+
+
+def _parking_failure_report(item: IntakeItem, *, change_id: str, context: str) -> DaemonReport:
+    return DaemonReport(
+        outcome="error",
+        detail=f"failed to park approved issue before execution: {context}"[:300],
+        issue={"repo": item.repo, "number": item.number, "title": item.title},
+        change_id=change_id,
+    )
 
 
 def _change_id_for(item: IntakeItem) -> str:
@@ -701,6 +750,8 @@ def daemon_once(
 ) -> DaemonReport:
     """Run one autonomous cycle: pick one approved item, run, publish or journal."""
     started = time.monotonic()
+    item: IntakeItem | None = None
+    issue_parked = False
     if os.environ.get("GITHUB_ACTIONS"):
         return _finish(
             DaemonReport(
@@ -762,10 +813,18 @@ def daemon_once(
             trusted_authors=config.reliability_decision_authors,
         )
         if approval_error is not None or effective_allowed_paths is None:
+            detail = approval_error or "approved issue has no valid Reliability Decision Record"
+            issue_parked = _park_issue_for_human(item, client=client)
+            if not issue_parked:
+                return _finish(
+                    _parking_failure_report(item, change_id=change_id, context=detail),
+                    discord_poster,
+                    icinga_poster,
+                )
             return _finish(
                 DaemonReport(
                     outcome="needs_triage",
-                    detail=(approval_error or "approved issue has no valid Reliability Decision Record")[:200],
+                    detail=detail[:200],
                     issue={"repo": item.repo, "number": item.number, "title": item.title},
                     change_id=change_id,
                 ),
@@ -776,42 +835,37 @@ def daemon_once(
         lhp_pointer = parse_lhp_pointer(body)
         lhp_payload: dict[str, Any] | None = None
         if lhp_pointer is not None:
-            post_lhp_update(
-                lhp_pointer,
-                lhp_config,
-                update_type="accepted",
-                status="accepted",
-                summary=f"Engineering Loop accepted approved issue {item.repo}#{item.number}",
-            )
             try:
                 lhp_payload = fetch_lhp_payload(lhp_pointer, lhp_config)
+                validated_approval_scope(lhp_payload)
             except Exception as exc:
-                post_lhp_update(
-                    lhp_pointer,
-                    lhp_config,
-                    update_type="blocked",
-                    status="blocked",
-                    summary=f"Could not fetch authoritative NOC LHP payload: {type(exc).__name__}: {exc}",
-                )
+                detail = f"LHP fetch failed: {type(exc).__name__}: {str(exc)[:160]}"
+                issue_parked = _park_issue_for_human(item, client=client)
+                if not issue_parked:
+                    return _finish(
+                        _parking_failure_report(item, change_id=change_id, context=detail),
+                        discord_poster,
+                        icinga_poster,
+                    )
                 return _finish(
                     DaemonReport(
                         outcome="needs_triage",
-                        detail=f"LHP fetch failed: {type(exc).__name__}: {str(exc)[:160]}",
+                        detail=detail,
                         issue={"repo": item.repo, "number": item.number, "title": item.title},
                         change_id=change_id,
                     ),
                     discord_poster,
                     icinga_poster,
                 )
-            lhp_hash_error = _lhp_payload_hash_error(lhp_payload, approval_scope)
+            lhp_hash_error = _lhp_approval_scope_hash_error(lhp_payload, approval_scope)
             if lhp_hash_error is not None:
-                post_lhp_update(
-                    lhp_pointer,
-                    lhp_config,
-                    update_type="blocked",
-                    status="blocked",
-                    summary=lhp_hash_error,
-                )
+                issue_parked = _park_issue_for_human(item, client=client)
+                if not issue_parked:
+                    return _finish(
+                        _parking_failure_report(item, change_id=change_id, context=lhp_hash_error),
+                        discord_poster,
+                        icinga_poster,
+                    )
                 return _finish(
                     DaemonReport(
                         outcome="needs_triage",
@@ -822,6 +876,42 @@ def daemon_once(
                     discord_poster,
                     icinga_poster,
                 )
+            handoff_state = lhp_payload.get("handoff")
+            current_status = str(handoff_state.get("status") or "") if isinstance(handoff_state, dict) else ""
+            if current_status != "requested":
+                detail = f"LHP handoff state is {current_status or 'missing'}, expected requested"
+                issue_parked = _park_issue_for_human(item, client=client)
+                if not issue_parked:
+                    return _finish(
+                        _parking_failure_report(item, change_id=change_id, context=detail),
+                        discord_poster,
+                        icinga_poster,
+                    )
+                return _finish(
+                    DaemonReport(
+                        outcome="needs_triage",
+                        detail=detail,
+                        issue={"repo": item.repo, "number": item.number, "title": item.title},
+                        change_id=change_id,
+                    ),
+                    discord_poster,
+                    icinga_poster,
+                )
+        issue_parked = _park_issue_for_human(item, client=client)
+        if not issue_parked:
+            return _finish(
+                _parking_failure_report(item, change_id=change_id, context="label transition failed"),
+                discord_poster,
+                icinga_poster,
+            )
+        if lhp_pointer is not None:
+            post_lhp_update(
+                lhp_pointer,
+                lhp_config,
+                update_type="accepted",
+                status="accepted",
+                summary=f"Engineering Loop accepted approved issue {item.repo}#{item.number}",
+            )
             post_lhp_update(
                 lhp_pointer,
                 lhp_config,
@@ -930,7 +1020,10 @@ def daemon_once(
         )
         return _finish(report, discord_poster, icinga_poster)
     except Exception as exc:
-        report = DaemonReport(outcome="error", detail=str(exc)[:300])
+        parking_suffix = ""
+        if item is not None and not issue_parked and not _park_issue_for_human(item, client=client):
+            parking_suffix = "; failed to park approved issue"
+        report = DaemonReport(outcome="error", detail=f"{str(exc)}{parking_suffix}"[:300])
         report.wall_clock_seconds = time.monotonic() - started
         return _finish(report, discord_poster, icinga_poster)
     finally:

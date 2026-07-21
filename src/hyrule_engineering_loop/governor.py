@@ -42,10 +42,16 @@ from hyrule_engineering_loop.lhp import (
 INTAKE_LABEL = "loop:intake"
 DECISION_MARKER = "reliability-governor-cdr:"
 LEGACY_DECISION_MARKER = "loop-governor-cdr:"
-CDR_SCHEMA_VERSION = "reliability-governor.cdr.v1"
+CDR_SCHEMA_VERSION = "reliability-governor.cdr.v2"
 WAKE_EVENT_SCHEMA_VERSION: Literal["reliability-governor.wake.v1"] = "reliability-governor.wake.v1"
 GOVERNOR_NAME = "Reliability Governor"
 GOVERNOR_ROLE = "staff_sre_autonomous_operations"
+
+
+class DecisionMarkerLookupError(RuntimeError):
+    """Remote CDR state could not be determined safely."""
+
+
 CONTROLLED_LOOPS: tuple[str, ...] = ("engineering", "noc", "knowledge")
 DEFAULT_STRONG_HISTORY_SUCCESSES = 5
 LHP_FETCH_ERROR_PREFIX = "fetch_error:"
@@ -99,6 +105,7 @@ IntentType = Literal[
     "non_prod_tooling",
     "internal_service_code",
     "provisioning_helper",
+    "infrastructure_config",
     "production_network",
     "customer_provisioning",
     "routing_policy",
@@ -158,6 +165,7 @@ class LhpAuthoritySummary(BaseModel):
     handoff_id: str
     case_id: str
     payload_hash: str
+    approval_scope_hash: str
 
 
 class WakeEventSubject(BaseModel):
@@ -318,6 +326,10 @@ class GovernorConfig:
     lhp: LhpClientConfig | None = None
     limit: int = 20
     dry_run: bool = False
+    trusted_comment_authors: tuple[str, ...] = (
+        "hyrule-engineering-loop",
+        "hyrule-engineering-loop[bot]",
+    )
 
 
 @dataclass
@@ -524,13 +536,27 @@ def governor_once(
             path = decision_record_path(record, config.state_dir)
             record.storage_path = str(path)
             prior_record = find_matching_decision_record(record, config.state_dir)
-            if prior_record is not None:
-                if _labels_already_converged(issue, record):
-                    report.skipped.append(f"{issue.issue_id}: unchanged decision {prior_record.record_id}")
-                    report.records.append(record)
+            remote_match = False
+            if prior_record is None:
+                try:
+                    remote_match = github_has_decision_marker(
+                        issue,
+                        record.record_id,
+                        client=client,
+                        trusted_authors=config.trusted_comment_authors,
+                    )
+                except DecisionMarkerLookupError:
+                    report.skipped.append(f"{issue.issue_id}: decision marker lookup unavailable")
                     continue
-                else:
+            if prior_record is not None or remote_match:
+                if remote_match and not path.exists():
+                    path = write_decision_record(record, config.state_dir)
+                    record.storage_path = str(path)
+                if not _labels_already_converged(issue, record):
                     apply_label_transition(issue, record, client=client)
+                report.skipped.append(f"{issue.issue_id}: unchanged decision {record.record_id}")
+                report.records.append(record)
+                continue
             else:
                 post_decision_record(issue, record, client=client)
                 path = write_decision_record(record, config.state_dir)
@@ -585,19 +611,22 @@ def govern_issue(
                 lhp_summary = LhpAuthoritySummary(
                     handoff_id=pointer.handoff_id,
                     case_id=pointer.case_id,
-                    payload_hash=payload_hash(lhp_payload)[:16],
+                    payload_hash=str(lhp_payload.get("payload_hash") or ""),
+                    approval_scope_hash=str(lhp_payload.get("approval_scope_hash") or ""),
                 )
             except Exception as exc:
                 lhp_summary = LhpAuthoritySummary(
                     handoff_id=pointer.handoff_id,
                     case_id=pointer.case_id,
                     payload_hash=f"{LHP_FETCH_ERROR_PREFIX}{payload_hash(type(exc).__name__ + str(exc))[:12]}",
+                    approval_scope_hash=f"{LHP_FETCH_ERROR_PREFIX}{payload_hash(type(exc).__name__ + str(exc))[:12]}",
                 )
         else:
             lhp_summary = LhpAuthoritySummary(
                 handoff_id=pointer.handoff_id,
                 case_id=pointer.case_id,
                 payload_hash="unfetched",
+                approval_scope_hash="unfetched",
             )
 
     task_text = _authority_text(issue, lhp_payload)
@@ -641,9 +670,23 @@ def govern_issue(
             "issue": issue.issue_id,
             "authority_text_hash": authority_text_hash,
             "issue_text_hash": issue_text_hash,
-            "lhp": lhp_summary.model_dump(mode="json") if lhp_summary is not None else None,
+            "lhp": (
+                {
+                    "handoff_id": lhp_summary.handoff_id,
+                    "case_id": lhp_summary.case_id,
+                    "approval_scope_hash": lhp_summary.approval_scope_hash,
+                }
+                if lhp_summary is not None
+                else None
+            ),
             "classification": classification.model_dump(mode="json"),
-            "knowledge": knowledge.model_dump(mode="json"),
+            "knowledge": {
+                "status": knowledge.status,
+                "authority_level_used": knowledge.authority_level_used,
+                "policy_result": knowledge.policy_result,
+                "refs": sorted(set(knowledge.refs)),
+                "reasons": sorted(set(knowledge.reasons)),
+            },
             "decision": decision,
             "capability": capability.model_dump(mode="json") if capability is not None else None,
             "allowed_paths": allowed_paths,
@@ -735,6 +778,15 @@ def classify_issue_intent(
         text,
         ["customer-impacting", "customer impacting", "customer provisioning", "provisioning config"],
     )
+    approval_scope = _stable_lhp_scope(lhp_payload)
+    raw_scope_handoff = approval_scope.get("handoff")
+    scope_handoff: dict[str, Any] = raw_scope_handoff if isinstance(raw_scope_handoff, dict) else {}
+    raw_scope_payload = scope_handoff.get("payload")
+    scope_payload: dict[str, Any] = raw_scope_payload if isinstance(raw_scope_payload, dict) else {}
+    disk_infrastructure_handoff = (
+        scope_handoff.get("case_type") == "proactive_disk_condition"
+        or scope_payload.get("change_domain") == "infrastructure_capacity_or_retention"
+    )
 
     if secrets:
         intent, risk_tier, domains = "secret", 4, ["secret"]
@@ -757,6 +809,12 @@ def classify_issue_intent(
         expected_paths = ["compliance/"]
         blast_radius = "compliance"
         rationale = "compliance surfaces are Tier 4"
+    elif disk_infrastructure_handoff:
+        intent, risk_tier, domains = "infrastructure_config", 3, ["infrastructure_config"]
+        expected_paths = ["ansible/", "configs/"]
+        services = ["infrastructure capacity"]
+        blast_radius = "production host configuration"
+        rationale = "disk remediation requires infrastructure changes outside the monitoring capability"
     elif production_routing:
         intent = (
             "routing_policy"
@@ -880,6 +938,10 @@ def decide_policy(
         return "needs_context", None, denial_reasons, policy_rules
 
     if capability is None:
+        if classification.intent_type == "infrastructure_config":
+            denial_reasons.append("infrastructure change has no matching autonomous capability envelope")
+            policy_rules.append("infrastructure capacity changes require explicit human handling")
+            return "needs_human", None, denial_reasons, policy_rules
         denial_reasons.append("no matching capability envelope")
         policy_rules.append("without a capability, sufficiently specified work can only become candidate")
         return "allow_candidate", None, denial_reasons, policy_rules
@@ -1033,6 +1095,50 @@ def post_decision_record(
     )
 
 
+def github_has_decision_marker(
+    issue: IssueSnapshot,
+    record_id: str,
+    *,
+    client: GhClient,
+    trusted_authors: tuple[str, ...],
+) -> bool:
+    """Find a trusted semantic CDR marker even when local state was lost."""
+
+    try:
+        raw = client.run(
+            [
+                "api",
+                "--paginate",
+                "--slurp",
+                f"repos/{issue.repo}/issues/{issue.number}/comments?per_page=100",
+            ]
+        )
+        decoded = json.loads(raw or "[]")
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise DecisionMarkerLookupError("GitHub decision-comment lookup failed") from exc
+    if not isinstance(decoded, list):
+        raise DecisionMarkerLookupError("GitHub decision-comment lookup returned malformed data")
+    pages = decoded
+    comments: list[dict[str, Any]] = []
+    for page in pages:
+        if isinstance(page, list):
+            if not all(isinstance(comment, dict) for comment in page):
+                raise DecisionMarkerLookupError("GitHub decision-comment lookup returned malformed comments")
+            comments.extend(page)
+        elif isinstance(page, dict):
+            comments.append(page)
+        else:
+            raise DecisionMarkerLookupError("GitHub decision-comment lookup returned malformed pages")
+    marker = f"<!-- {DECISION_MARKER}{record_id} -->"
+    trusted = set(trusted_authors)
+    for comment in comments:
+        author = comment.get("user") or comment.get("author") or {}
+        login = str(author.get("login") or "") if isinstance(author, dict) else str(author or "")
+        if login in trusted and marker in str(comment.get("body") or ""):
+            return True
+    return False
+
+
 def apply_label_transition(
     issue: IssueSnapshot,
     record: CandidateDecisionRecord,
@@ -1114,16 +1220,7 @@ def find_matching_decision_record(
 def stable_decision_signature(record: CandidateDecisionRecord) -> dict[str, Any]:
     """Return the decision fields that should make Governor posting idempotent."""
 
-    data = record.model_dump(mode="json")
-    for field_name in (
-        "record_id",
-        "created_at",
-        "knowledge_context_pack_id",
-        "knowledge_export_version",
-        "storage_path",
-    ):
-        data.pop(field_name, None)
-    return data
+    return {"record_id": record.record_id}
 
 
 def _load_governor_knowledge(
@@ -1147,7 +1244,10 @@ def _load_governor_knowledge(
 def summarize_knowledge_pack(pack: dict[str, Any]) -> KnowledgeSummary:
     """Reduce a Knowledge context pack to the policy fields the Governor needs."""
 
-    refs = [ref for ref in pack.get("included_refs", []) if isinstance(ref, dict)]
+    refs = sorted(
+        (ref for ref in pack.get("included_refs", []) if isinstance(ref, dict)),
+        key=lambda ref: str(ref.get("concept_id") or "unknown"),
+    )
     ref_ids = [str(ref.get("concept_id", "unknown")) for ref in refs]
     reasons: list[str] = []
     status: KnowledgeStatus = "current"
@@ -1189,32 +1289,20 @@ def summarize_knowledge_pack(pack: dict[str, Any]) -> KnowledgeSummary:
         authority_level_used=authority,
         policy_result=policy_result,
         refs=ref_ids,
-        reasons=reasons,
+        reasons=sorted(set(reasons)),
     )
 
 
 def _authority_text(issue: IssueSnapshot, lhp_payload: dict[str, Any] | None) -> str:
     if lhp_payload is None:
         return safe_text(f"{issue.title}\n{issue.body}", limit=5000)
-    selected = {
-        "handoff": lhp_payload.get("handoff"),
-        "case": lhp_payload.get("case"),
-        "verification_objectives": lhp_payload.get("verification_objectives"),
-        "knowledge_artifacts": lhp_payload.get("knowledge_artifacts"),
-    }
-    return safe_text(json.dumps(selected, sort_keys=True, default=str), limit=7000)
+    return safe_text(json.dumps(_stable_lhp_scope(lhp_payload), sort_keys=True, default=str), limit=7000)
 
 
 def _classification_text(issue: IssueSnapshot, lhp_payload: dict[str, Any] | None) -> str:
     if lhp_payload is None:
         return f"{issue.title}\n{issue.body}"
-    selected = {
-        "handoff": lhp_payload.get("handoff"),
-        "case": lhp_payload.get("case"),
-        "verification_objectives": lhp_payload.get("verification_objectives"),
-        "knowledge_artifacts": lhp_payload.get("knowledge_artifacts"),
-    }
-    return json.dumps(selected, sort_keys=True, default=str)
+    return json.dumps(_stable_lhp_scope(lhp_payload), sort_keys=True, default=str)
 
 
 def _eligible_for_governor(issue: IssueSnapshot) -> bool:
@@ -1245,15 +1333,18 @@ def _verification_method(
     intent: IntentType,
 ) -> str:
     if lhp_payload is not None:
+        scope = _stable_lhp_scope(lhp_payload)
+        raw_scope_handoff = scope.get("handoff")
+        scope_handoff: dict[str, Any] = raw_scope_handoff if isinstance(raw_scope_handoff, dict) else {}
         objectives = [
             str(item.get("name") or item.get("objective_key"))
-            for item in lhp_payload.get("verification_objectives", [])
+            for item in scope.get("verification_objectives", [])
             if isinstance(item, dict)
         ]
         criteria = [
             str(item)
-            for item in (lhp_payload.get("handoff") or {}).get("acceptance_criteria", [])
-        ] if isinstance(lhp_payload.get("handoff"), dict) else []
+            for item in scope_handoff.get("acceptance_criteria", [])
+        ]
         combined = [item for item in objectives + criteria if item]
         if combined:
             return "; ".join(safe_text(item, limit=160) for item in combined[:4])
@@ -1273,7 +1364,7 @@ def _rollback_plan(text: str, *, intent: IntentType) -> str:
         return "Use the rollback/revert procedure specified in the request."
     if intent in {"docs", "runbook", "dashboard", "tests"}:
         return "Close the draft PR or revert the docs/test commit before merge."
-    if intent in {"monitoring", "alert_tuning", "non_prod_tooling"}:
+    if intent in {"monitoring", "alert_tuning", "non_prod_tooling", "infrastructure_config"}:
         return "Revert the draft PR; for deployed alert tuning, restore the previous rule/config version."
     return ""
 
@@ -1358,7 +1449,19 @@ def _authority_rank(level: str) -> int | None:
 
 
 def _lhp_payload_fetched(summary: LhpAuthoritySummary) -> bool:
-    return summary.payload_hash != "unfetched" and not summary.payload_hash.startswith(LHP_FETCH_ERROR_PREFIX)
+    return (
+        summary.payload_hash != "unfetched"
+        and not summary.payload_hash.startswith(LHP_FETCH_ERROR_PREFIX)
+        and summary.approval_scope_hash != "unfetched"
+        and not summary.approval_scope_hash.startswith(LHP_FETCH_ERROR_PREFIX)
+    )
+
+
+def _stable_lhp_scope(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    scope = payload.get("approval_scope")
+    return scope if isinstance(scope, dict) else {}
 
 
 def _labels_already_converged(issue: IssueSnapshot, record: CandidateDecisionRecord) -> bool:

@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from typing import Any, Callable
 
 LHP_SCHEMA_VERSION = "lhp.v1"
+LHP_APPROVAL_SCOPE_SCHEMA_VERSION = "lhp.v1.approval-scope.v1"
 POINTER_RE = re.compile(r"```json\s*(\{.*?\"fetch_path\".*?\})\s*```", re.S)
 HANDOFF_MARKER_RE = re.compile(r"noc-lhp-handoff-id:([A-Za-z0-9_.:-]+)")
 CASE_MARKER_RE = re.compile(r"noc-case-id:([A-Za-z0-9_.:-]+)")
@@ -100,13 +101,35 @@ def fetch_lhp_payload(pointer: LhpPointer, config: LhpClientConfig, *, requester
     handoff = _dict_value(payload.get("handoff"))
     if handoff.get("handoff_id") != pointer.handoff_id or handoff.get("case_id") != pointer.case_id:
         raise RuntimeError("NOC LHP payload identity mismatch")
+    expected_payload_hash = _hash_token(payload.get("payload_hash"), field_name="payload_hash")
+    unhashed_payload = {key: value for key, value in payload.items() if key != "payload_hash"}
+    if payload_hash(unhashed_payload) != expected_payload_hash:
+        raise RuntimeError("NOC LHP payload hash mismatch")
+    approval_scope = validated_approval_scope(payload)
+    scope_handoff = _dict_value(approval_scope.get("handoff"))
+    if scope_handoff.get("handoff_id") != pointer.handoff_id or scope_handoff.get("case_id") != pointer.case_id:
+        raise RuntimeError("NOC LHP approval scope identity mismatch")
     return payload
 
 
+def validated_approval_scope(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate and return the immutable authorization projection."""
+
+    scope = _dict_value(payload.get("approval_scope"))
+    if scope.get("schema_version") != LHP_APPROVAL_SCOPE_SCHEMA_VERSION:
+        raise RuntimeError("NOC LHP approval scope schema mismatch")
+    expected = _hash_token(payload.get("approval_scope_hash"), field_name="approval_scope_hash")
+    if payload_hash(scope) != expected:
+        raise RuntimeError("NOC LHP approval scope hash mismatch")
+    _validate_approval_scope_binding(payload, scope)
+    return scope
+
+
 def render_lhp_request(payload: dict[str, Any], *, issue_url: str, issue_body: str) -> str:
-    handoff = _dict_value(payload.get("handoff"))
-    case = _dict_value(payload.get("case"))
-    objectives = _list_value(payload.get("verification_objectives"))
+    approval_scope = validated_approval_scope(payload)
+    handoff = _dict_value(approval_scope.get("handoff"))
+    case = _dict_value(approval_scope.get("case"))
+    objectives = _list_value(approval_scope.get("verification_objectives"))
     lines = [
         f"# {safe_text(handoff.get('objective') or 'NOC LHP request')}",
         "",
@@ -133,6 +156,60 @@ def render_lhp_request(payload: dict[str, Any], *, issue_url: str, issue_body: s
         safe_text(issue_body, limit=2000),
     ]
     return "\n".join(lines)
+
+
+def _validate_approval_scope_binding(payload: dict[str, Any], scope: dict[str, Any]) -> None:
+    """Ensure audit snapshot fields cannot diverge from approved execution fields."""
+
+    current_handoff = _dict_value(payload.get("handoff"))
+    approved_handoff = _dict_value(scope.get("handoff"))
+    for field, approved_value in approved_handoff.items():
+        if field == "payload_hash":
+            current_hash = payload_hash(_dict_value(current_handoff.get("payload")))
+            if current_hash != str(approved_value or "").strip().lower():
+                raise RuntimeError("NOC LHP handoff payload is outside the approved scope")
+            continue
+        if field == "payload":
+            if not _projection_matches(_dict_value(current_handoff.get("payload")), _dict_value(approved_value)):
+                raise RuntimeError("NOC LHP handoff routing payload is outside the approved scope")
+            continue
+        if current_handoff.get(field) != approved_value:
+            raise RuntimeError(f"NOC LHP handoff field {field} is outside the approved scope")
+
+    current_objectives = [item for item in _list_value(payload.get("verification_objectives")) if isinstance(item, dict)]
+    for approved in _list_value(scope.get("verification_objectives")):
+        if not isinstance(approved, dict):
+            raise RuntimeError("NOC LHP approval scope objective is invalid")
+        objective_id = str(approved.get("objective_id") or "")
+        objective_key = str(approved.get("objective_key") or "")
+        current = next(
+            (
+                item
+                for item in current_objectives
+                if (objective_id and str(item.get("objective_id") or "") == objective_id)
+                or (not objective_id and str(item.get("objective_key") or "") == objective_key)
+            ),
+            None,
+        )
+        if current is None:
+            raise RuntimeError("NOC LHP approved verification objective is missing")
+        for field, approved_value in approved.items():
+            if field == "payload_hash":
+                if payload_hash(_dict_value(current.get("payload"))) != str(approved_value or "").strip().lower():
+                    raise RuntimeError("NOC LHP objective payload is outside the approved scope")
+            elif current.get(field) != approved_value:
+                raise RuntimeError(f"NOC LHP objective field {field} is outside the approved scope")
+
+
+def _projection_matches(current: dict[str, Any], approved: dict[str, Any]) -> bool:
+    for key, approved_value in approved.items():
+        current_value = current.get(key)
+        if isinstance(approved_value, dict):
+            if not isinstance(current_value, dict) or not _projection_matches(current_value, approved_value):
+                return False
+        elif current_value != approved_value:
+            return False
+    return True
 
 
 def post_lhp_update(
@@ -166,7 +243,9 @@ def post_lhp_update(
 
 
 def payload_hash(value: Any) -> str:
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str).encode()
+    ).hexdigest()
 
 
 def safe_text(value: Any, *, limit: int = 1000) -> str:
@@ -235,3 +314,10 @@ def _list_value(value: Any) -> list[Any]:
 def _token(value: Any) -> str:
     text = str(value or "")
     return "".join(ch for ch in text if ch.isalnum() or ch in {"_", "-", ":", ".", "/"})[:180]
+
+
+def _hash_token(value: Any, *, field_name: str) -> str:
+    rendered = str(value or "").strip().lower()
+    if len(rendered) != 64 or any(ch not in "0123456789abcdef" for ch in rendered):
+        raise RuntimeError(f"NOC LHP {field_name} is missing or invalid")
+    return rendered

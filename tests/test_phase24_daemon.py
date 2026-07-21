@@ -93,10 +93,13 @@ def _issue_view_with_reliability_decision(
     approved_body: str | None = None,
     author_login: str = "trusted-governor",
     lhp_payload_hash: str | None = None,
+    lhp_approval_scope_hash: str | None = None,
 ) -> str:
     body_for_hash = approved_body if approved_body is not None else current_body
     payload = {
-        "schema_version": "reliability-governor.cdr.v1",
+        "schema_version": (
+            "reliability-governor.cdr.v2" if lhp_approval_scope_hash is not None else "reliability-governor.cdr.v1"
+        ),
         "record_id": "record-1",
         "repo": repo,
         "issue_number": number,
@@ -109,6 +112,7 @@ def _issue_view_with_reliability_decision(
             "handoff_id": "handoff-1",
             "case_id": "case-1",
             "payload_hash": lhp_payload_hash,
+            "approval_scope_hash": lhp_approval_scope_hash,
         }
     comment = "\n".join(
         [
@@ -144,16 +148,31 @@ def _lhp_body() -> str:
 
 
 def _lhp_payload(objective: str) -> dict[str, Any]:
-    return {
-        "schema_version": "lhp.v1",
+    approval_scope = {
+        "schema_version": "lhp.v1.approval-scope.v1",
+        "case": {"case_id": "case-1", "occurrence_id": "occurrence-1"},
         "handoff": {
             "handoff_id": "handoff-1",
             "case_id": "case-1",
             "objective": objective,
         },
-        "case": {"case_id": "case-1"},
         "verification_objectives": [],
     }
+    result = {
+        "schema_version": "lhp.v1",
+        "handoff": {
+            "handoff_id": "handoff-1",
+            "case_id": "case-1",
+            "objective": objective,
+            "status": "requested",
+        },
+        "case": {"case_id": "case-1"},
+        "verification_objectives": [],
+        "approval_scope": approval_scope,
+        "approval_scope_hash": payload_hash(approval_scope),
+    }
+    result["payload_hash"] = payload_hash(result)
+    return result
 
 
 # --- AC1: run lock ----------------------------------------------------------
@@ -590,7 +609,7 @@ def test_daemon_rejects_stale_reliability_decision_after_long_body_tail_edit(tmp
     assert report.detail == "Reliability Decision Record is stale for the current issue title/body"
 
 
-def test_daemon_rejects_stale_lhp_payload_hash(
+def test_daemon_rejects_stale_lhp_approval_scope_hash(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -618,6 +637,7 @@ def test_daemon_rejects_stale_lhp_payload_hash(
                 allowed_paths=["docs/"],
                 current_body=body,
                 lhp_payload_hash=payload_hash(approved_payload)[:16],
+                lhp_approval_scope_hash=approved_payload["approval_scope_hash"],
             ),
         }
     )
@@ -629,7 +649,119 @@ def test_daemon_rejects_stale_lhp_payload_hash(
     report = daemon_once(config, client=gh, feature_runner=lambda **kwargs: pytest.fail("runner should not start"))
 
     assert report.outcome == "needs_triage"
-    assert report.detail == "Reliability Decision Record record-1 LHP payload hash is stale"
+    assert report.detail == "Reliability Decision Record record-1 LHP approval scope hash is stale"
+
+
+def test_failed_top_issue_is_parked_and_next_cycle_advances_queue(tmp_path: Path) -> None:
+    repo = "AS215932/engineering-loop"
+    issues = [
+        {
+            "number": 1,
+            "title": "First approved issue",
+            "body": "## Context\nfirst\n## Action items\n1. fail\n## Related\n- test",
+            "labels": [{"name": "loop:approved"}, {"name": "critical"}],
+            "url": f"https://github.com/{repo}/issues/1",
+            "updatedAt": "2026-06-12T00:00:00Z",
+        },
+        {
+            "number": 2,
+            "title": "Second approved issue",
+            "body": "## Context\nsecond\n## Action items\n1. continue\n## Related\n- test",
+            "labels": [{"name": "loop:approved"}],
+            "url": f"https://github.com/{repo}/issues/2",
+            "updatedAt": "2026-06-12T00:00:00Z",
+        },
+    ]
+
+    class StatefulGh:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def run(self, args: list[str]) -> str:
+            self.calls.append(list(args))
+            if args[:2] == ["issue", "list"]:
+                approved = [
+                    issue
+                    for issue in issues
+                    if any(label["name"] == "loop:approved" for label in issue["labels"])
+                ]
+                return json.dumps(approved)
+            if args[:2] == ["issue", "view"]:
+                number = int(args[2])
+                issue = next(candidate for candidate in issues if candidate["number"] == number)
+                return json.dumps({"body": issue["body"]})
+            if args[:2] == ["issue", "edit"]:
+                number = int(args[2])
+                issue = next(candidate for candidate in issues if candidate["number"] == number)
+                names = [label["name"] for label in issue["labels"]]
+                names.remove("loop:approved")
+                names.append("loop:needs-human")
+                issue["labels"] = [{"name": name} for name in names]
+                return ""
+            return "[]"
+
+    client = StatefulGh()
+    config = DaemonConfig(
+        repos=(repo,),
+        state_dir=tmp_path / "state",
+        output_root=tmp_path / "runs",
+    )
+
+    def failed_runner(**kwargs: Any) -> dict[str, Any]:
+        return {
+            "final_state": {"backend_results": []},
+            "failure_summary": {"error_excerpt": "deliberate regression failure"},
+        }
+
+    first = daemon_once(config, client=client, feature_runner=failed_runner)
+    second = daemon_once(config, client=client, feature_runner=failed_runner)
+
+    assert first.issue is not None and first.issue["number"] == 1
+    assert second.issue is not None and second.issue["number"] == 2
+    assert [label["name"] for label in issues[0]["labels"]] == ["critical", "loop:needs-human"]
+    assert [label["name"] for label in issues[1]["labels"]] == ["loop:needs-human"]
+    edit_numbers = [int(call[2]) for call in client.calls if call[:2] == ["issue", "edit"]]
+    assert edit_numbers == [1, 2]
+
+
+def test_daemon_aborts_before_execution_when_queue_parking_fails(tmp_path: Path) -> None:
+    repo = "AS215932/engineering-loop"
+
+    class ParkingFailureGh(FakeGh):
+        def run(self, args: list[str]) -> str:
+            self.calls.append(list(args))
+            if args[:2] == ["issue", "edit"]:
+                raise RuntimeError("temporary label API failure")
+            key = " ".join(args[:2])
+            return self.responses.get(key, "[]")
+
+    client = ParkingFailureGh(
+        {
+            "issue list": _approved_issue_json(1, repo=repo, labels=["loop:approved"]),
+            "issue view": json.dumps(
+                {
+                    "body": "## Context\nfirst\n## Action items\n1. fail closed\n## Related\n- test"
+                }
+            ),
+        }
+    )
+    runner_called = False
+
+    def runner(**kwargs: Any) -> dict[str, Any]:
+        nonlocal runner_called
+        runner_called = True
+        return {"final_state": {}}
+
+    report = daemon_once(
+        DaemonConfig(repos=(repo,), state_dir=tmp_path / "state", output_root=tmp_path / "runs"),
+        client=client,
+        feature_runner=runner,
+    )
+
+    assert report.outcome == "error"
+    assert "failed to park approved issue before execution" in report.detail
+    assert runner_called is False
+    assert len([call for call in client.calls if call[:2] == ["issue", "edit"]]) == 3
 
 
 def test_repo_name_for_issue_maps_core_repo_checkout_names() -> None:
