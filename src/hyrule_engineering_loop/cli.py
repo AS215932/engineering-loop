@@ -554,6 +554,14 @@ def governor_command(args: argparse.Namespace) -> int:
         lhp=LhpClientConfig.from_env(),
         limit=args.limit,
         dry_run=args.dry_run,
+        trusted_comment_authors=tuple(
+            dict.fromkeys(
+                (
+                    *ReliabilityGovernorConfig.trusted_comment_authors,
+                    *(args.trusted_comment_author or ()),
+                )
+            )
+        ),
     )
     report = reliability_governor_once(config, client=GhCli())
     record_insights(
@@ -789,6 +797,12 @@ def _add_reliability_governor_parser(
     parser.add_argument("--repo", action="append")
     parser.add_argument("--limit", type=int, default=ReliabilityGovernorConfig.limit)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--trusted-comment-author",
+        action="append",
+        metavar="LOGIN",
+        help="trusted GitHub login whose existing Reliability Decision markers suppress reposting. Repeatable.",
+    )
     parser.add_argument("--state-dir-path", dest="state_dir_path")
     parser.add_argument("--registry", help="capability registry YAML/JSON")
     parser.add_argument("--knowledge-context", action="store_true", help="include a read-only AS215932 knowledge context pack")

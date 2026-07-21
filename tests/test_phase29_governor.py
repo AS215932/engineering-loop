@@ -271,6 +271,10 @@ def test_production_daemon_unit_allows_auto_approved_tier1_paths() -> None:
     assert "--allow hyrule-cloud=hyrule_cloud" in service
     assert "--repo AS215932/as215932.net" in service
 
+    governor_service_path = Path(__file__).resolve().parents[1] / "configs" / "loop" / "hyrule-reliability-governor.service"
+    governor_service = governor_service_path.read_text(encoding="utf-8")
+    assert "--trusted-comment-author Svaag" in governor_service
+
 
 def test_reliability_governor_cli_is_primary_and_governor_is_alias() -> None:
     parser = build_parser()
@@ -282,6 +286,10 @@ def test_reliability_governor_cli_is_primary_and_governor_is_alias() -> None:
     assert alias.command == "governor"
     assert primary.func is alias.func
     assert primary.knowledge_context_role == "engineering_loop_reliability_governor"
+    configured = parser.parse_args(
+        ["reliability-governor", "--once", "--trusted-comment-author", "Svaag"]
+    )
+    assert configured.trusted_comment_author == ["Svaag"]
 
 
 def test_wake_event_contract_accepts_callback_subjects() -> None:
@@ -504,6 +512,119 @@ def test_trusted_github_marker_restores_missing_local_state_without_reposting(tm
     assert report.skipped == [f"{issue.issue_id}: unchanged decision {expected.record_id}"]
 
 
+def test_configured_production_author_restores_missing_local_state(tmp_path: Path) -> None:
+    issue = _issue(
+        title="Update docs runbook",
+        body="Update documentation and verify rendered docs.",
+        labels=[APPROVED_LABEL],
+    )
+    expected = govern_issue(issue, registry=default_capability_registry(), knowledge_loader=_knowledge)
+    gh = FakeGh(
+        [_issue_json(issue)],
+        comments=[
+            {
+                "user": {"login": "Svaag"},
+                "body": f"<!-- {DECISION_MARKER}{expected.record_id} -->",
+            }
+        ],
+    )
+    config = ReliabilityGovernorConfig(
+        repos=(issue.repo,),
+        state_dir=tmp_path / "missing-production-state",
+        trusted_comment_authors=("Svaag",),
+    )
+
+    report = reliability_governor_once(config, client=gh, knowledge_loader=_knowledge)
+
+    assert not [call for call in gh.calls if call[:2] == ["issue", "comment"]]
+    assert report.skipped == [f"{issue.issue_id}: unchanged decision {expected.record_id}"]
+
+
+def test_comment_lookup_failure_does_not_repost_decision(tmp_path: Path) -> None:
+    issue = _issue(
+        title="Update docs runbook",
+        body="Update documentation and verify rendered docs.",
+        labels=[APPROVED_LABEL],
+    )
+
+    class FailingCommentsGh(FakeGh):
+        def run(self, args: list[str]) -> str:
+            if args and args[0] == "api":
+                raise RuntimeError("GitHub comments unavailable")
+            return super().run(args)
+
+    gh = FailingCommentsGh([_issue_json(issue)])
+    report = reliability_governor_once(
+        ReliabilityGovernorConfig(repos=(issue.repo,), state_dir=tmp_path / "missing-state"),
+        client=gh,
+        knowledge_loader=_knowledge,
+    )
+
+    assert not [call for call in gh.calls if call[:2] == ["issue", "comment"]]
+    assert report.records == []
+    assert report.skipped == [f"{issue.issue_id}: decision marker lookup unavailable"]
+
+
+def test_malformed_comment_lookup_does_not_repost_decision(tmp_path: Path) -> None:
+    issue = _issue(
+        title="Update docs runbook",
+        body="Update documentation and verify rendered docs.",
+        labels=[APPROVED_LABEL],
+    )
+
+    class MalformedCommentsGh(FakeGh):
+        def run(self, args: list[str]) -> str:
+            if args and args[0] == "api":
+                return json.dumps([["not-a-comment"]])
+            return super().run(args)
+
+    gh = MalformedCommentsGh([_issue_json(issue)])
+    report = reliability_governor_once(
+        ReliabilityGovernorConfig(repos=(issue.repo,), state_dir=tmp_path / "missing-state"),
+        client=gh,
+        knowledge_loader=_knowledge,
+    )
+
+    assert not [call for call in gh.calls if call[:2] == ["issue", "comment"]]
+    assert report.records == []
+    assert report.skipped == [f"{issue.issue_id}: decision marker lookup unavailable"]
+
+
+def test_knowledge_reference_order_does_not_change_record_identity() -> None:
+    issue = _issue(
+        title="Update docs runbook",
+        body="Update documentation and verify rendered docs.",
+    )
+    refs = [
+        {
+            "concept_id": "generated/services/beta",
+            "authority_tier": "A0",
+            "freshness_status": "stale",
+        },
+        {
+            "concept_id": "generated/services/alpha",
+            "authority_tier": "A0",
+            "freshness_status": "stale",
+        },
+    ]
+
+    def knowledge(pack_refs: list[dict[str, Any]]) -> Any:
+        return summarize_knowledge_pack({**CURRENT_PACK, "included_refs": pack_refs})
+
+    first = govern_issue(
+        issue,
+        registry=default_capability_registry(),
+        knowledge_loader=lambda *_: knowledge(refs),
+    )
+    second = govern_issue(
+        issue,
+        registry=default_capability_registry(),
+        knowledge_loader=lambda *_: knowledge(list(reversed(refs))),
+    )
+
+    assert first.record_id == second.record_id
+
+
 def test_untrusted_github_marker_does_not_suppress_decision_comment(tmp_path: Path) -> None:
     issue = _issue(
         title="Update docs runbook",
@@ -658,6 +779,10 @@ def _lhp_payload(
     objective: str = "resolve disk alert follow-up",
     knowledge_artifacts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    handoff_payload = {
+        "change_domain": "infrastructure_capacity_or_retention",
+        "expected_path_classes": ["ansible/", "configs/"],
+    }
     approval_scope = {
         "schema_version": "lhp.v1.approval-scope.v1",
         "case": {"case_id": "case_1", "occurrence_id": "occurrence_1"},
@@ -670,10 +795,8 @@ def _lhp_payload(
             "resource": {"host": "rtr", "filesystem": "/"},
             "constraints": ["draft PR only"],
             "acceptance_criteria": ["monitoring alert clears"],
-            "payload": {
-                "change_domain": "infrastructure_capacity_or_retention",
-                "expected_path_classes": ["ansible/", "configs/"],
-            },
+            "payload": handoff_payload,
+            "payload_hash": payload_hash(handoff_payload),
         },
         "verification_objectives": [{"objective_key": "disk_clear", "name": "disk alert clears"}],
     }
@@ -689,6 +812,7 @@ def _lhp_payload(
             "constraints": ["draft PR only"],
             "acceptance_criteria": ["monitoring alert clears"],
             "status": "requested",
+            "payload": handoff_payload,
         },
         "case": {"case_id": "case_1", "status": "handoff_requested"},
         "verification_objectives": [{"objective_key": "disk_clear", "name": "disk alert clears"}],

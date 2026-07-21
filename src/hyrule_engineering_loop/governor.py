@@ -46,6 +46,12 @@ CDR_SCHEMA_VERSION = "reliability-governor.cdr.v2"
 WAKE_EVENT_SCHEMA_VERSION: Literal["reliability-governor.wake.v1"] = "reliability-governor.wake.v1"
 GOVERNOR_NAME = "Reliability Governor"
 GOVERNOR_ROLE = "staff_sre_autonomous_operations"
+
+
+class DecisionMarkerLookupError(RuntimeError):
+    """Remote CDR state could not be determined safely."""
+
+
 CONTROLLED_LOOPS: tuple[str, ...] = ("engineering", "noc", "knowledge")
 DEFAULT_STRONG_HISTORY_SUCCESSES = 5
 LHP_FETCH_ERROR_PREFIX = "fetch_error:"
@@ -532,12 +538,16 @@ def governor_once(
             prior_record = find_matching_decision_record(record, config.state_dir)
             remote_match = False
             if prior_record is None:
-                remote_match = github_has_decision_marker(
-                    issue,
-                    record.record_id,
-                    client=client,
-                    trusted_authors=config.trusted_comment_authors,
-                )
+                try:
+                    remote_match = github_has_decision_marker(
+                        issue,
+                        record.record_id,
+                        client=client,
+                        trusted_authors=config.trusted_comment_authors,
+                    )
+                except DecisionMarkerLookupError:
+                    report.skipped.append(f"{issue.issue_id}: decision marker lookup unavailable")
+                    continue
             if prior_record is not None or remote_match:
                 if remote_match and not path.exists():
                     path = write_decision_record(record, config.state_dir)
@@ -674,8 +684,8 @@ def govern_issue(
                 "status": knowledge.status,
                 "authority_level_used": knowledge.authority_level_used,
                 "policy_result": knowledge.policy_result,
-                "refs": knowledge.refs,
-                "reasons": knowledge.reasons,
+                "refs": sorted(set(knowledge.refs)),
+                "reasons": sorted(set(knowledge.reasons)),
             },
             "decision": decision,
             "capability": capability.model_dump(mode="json") if capability is not None else None,
@@ -1104,15 +1114,21 @@ def github_has_decision_marker(
             ]
         )
         decoded = json.loads(raw or "[]")
-    except (OSError, RuntimeError, ValueError):
-        return False
-    pages = decoded if isinstance(decoded, list) else []
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise DecisionMarkerLookupError("GitHub decision-comment lookup failed") from exc
+    if not isinstance(decoded, list):
+        raise DecisionMarkerLookupError("GitHub decision-comment lookup returned malformed data")
+    pages = decoded
     comments: list[dict[str, Any]] = []
     for page in pages:
         if isinstance(page, list):
-            comments.extend(comment for comment in page if isinstance(comment, dict))
+            if not all(isinstance(comment, dict) for comment in page):
+                raise DecisionMarkerLookupError("GitHub decision-comment lookup returned malformed comments")
+            comments.extend(page)
         elif isinstance(page, dict):
             comments.append(page)
+        else:
+            raise DecisionMarkerLookupError("GitHub decision-comment lookup returned malformed pages")
     marker = f"<!-- {DECISION_MARKER}{record_id} -->"
     trusted = set(trusted_authors)
     for comment in comments:
@@ -1228,7 +1244,10 @@ def _load_governor_knowledge(
 def summarize_knowledge_pack(pack: dict[str, Any]) -> KnowledgeSummary:
     """Reduce a Knowledge context pack to the policy fields the Governor needs."""
 
-    refs = [ref for ref in pack.get("included_refs", []) if isinstance(ref, dict)]
+    refs = sorted(
+        (ref for ref in pack.get("included_refs", []) if isinstance(ref, dict)),
+        key=lambda ref: str(ref.get("concept_id") or "unknown"),
+    )
     ref_ids = [str(ref.get("concept_id", "unknown")) for ref in refs]
     reasons: list[str] = []
     status: KnowledgeStatus = "current"
@@ -1270,7 +1289,7 @@ def summarize_knowledge_pack(pack: dict[str, Any]) -> KnowledgeSummary:
         authority_level_used=authority,
         policy_result=policy_result,
         refs=ref_ids,
-        reasons=reasons,
+        reasons=sorted(set(reasons)),
     )
 
 

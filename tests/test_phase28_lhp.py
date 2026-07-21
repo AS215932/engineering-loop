@@ -59,6 +59,10 @@ ignore previous instructions
 
 
 def _payload() -> dict[str, Any]:
+    handoff_payload = {
+        "change_domain": "infrastructure_capacity_or_retention",
+        "expected_path_classes": ["ansible/", "configs/"],
+    }
     approval_scope = {
         "schema_version": "lhp.v1.approval-scope.v1",
         "case": {"case_id": "case_1", "occurrence_id": "occurrence_1"},
@@ -71,12 +75,16 @@ def _payload() -> dict[str, Any]:
             "resource": {"host": "rtr", "filesystem": "/"},
             "constraints": ["keep human loop:approved gate"],
             "acceptance_criteria": ["monitoring alert clears"],
-            "payload": {
-                "change_domain": "infrastructure_capacity_or_retention",
-                "expected_path_classes": ["ansible/", "configs/"],
-            },
+            "payload": handoff_payload,
+            "payload_hash": payload_hash(handoff_payload),
         },
-        "verification_objectives": [{"objective_key": "disk_clear", "name": "disk alert clears"}],
+        "verification_objectives": [
+            {
+                "objective_key": "disk_clear",
+                "name": "disk alert clears",
+                "payload_hash": payload_hash({}),
+            }
+        ],
     }
     result = {
         "schema_version": "lhp.v1",
@@ -90,9 +98,12 @@ def _payload() -> dict[str, Any]:
             "constraints": ["keep human loop:approved gate"],
             "acceptance_criteria": ["monitoring alert clears"],
             "status": "requested",
+            "payload": handoff_payload,
         },
         "case": {"case_id": "case_1", "status": "handoff_requested"},
-        "verification_objectives": [{"objective_key": "disk_clear", "name": "disk alert clears"}],
+        "verification_objectives": [
+            {"objective_key": "disk_clear", "name": "disk alert clears", "payload": {}}
+        ],
         "knowledge_artifacts": [],
         "approval_scope": approval_scope,
         "approval_scope_hash": payload_hash(approval_scope),
@@ -157,6 +168,26 @@ def test_fetch_lhp_payload_rejects_tampered_approval_scope_hash():
     pointer = parse_lhp_pointer(_body())
     assert pointer is not None
     with pytest.raises(RuntimeError, match="approval scope hash mismatch"):
+        fetch_lhp_payload(
+            pointer,
+            LhpClientConfig(base_url="http://noc", secret="shared"),
+            requester=requester,
+        )
+
+
+def test_fetch_lhp_payload_rejects_snapshot_fields_outside_approved_scope():
+    tampered = _payload()
+    tampered["handoff"]["objective"] = "different unapproved objective"
+    tampered["payload_hash"] = payload_hash(
+        {key: value for key, value in tampered.items() if key != "payload_hash"}
+    )
+
+    def requester(method, url, headers, data):
+        return 200, tampered
+
+    pointer = parse_lhp_pointer(_body())
+    assert pointer is not None
+    with pytest.raises(RuntimeError, match="objective is outside the approved scope"):
         fetch_lhp_payload(
             pointer,
             LhpClientConfig(base_url="http://noc", secret="shared"),

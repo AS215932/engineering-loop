@@ -724,6 +724,46 @@ def test_failed_top_issue_is_parked_and_next_cycle_advances_queue(tmp_path: Path
     assert edit_numbers == [1, 2]
 
 
+def test_daemon_aborts_before_execution_when_queue_parking_fails(tmp_path: Path) -> None:
+    repo = "AS215932/engineering-loop"
+
+    class ParkingFailureGh(FakeGh):
+        def run(self, args: list[str]) -> str:
+            self.calls.append(list(args))
+            if args[:2] == ["issue", "edit"]:
+                raise RuntimeError("temporary label API failure")
+            key = " ".join(args[:2])
+            return self.responses.get(key, "[]")
+
+    client = ParkingFailureGh(
+        {
+            "issue list": _approved_issue_json(1, repo=repo, labels=["loop:approved"]),
+            "issue view": json.dumps(
+                {
+                    "body": "## Context\nfirst\n## Action items\n1. fail closed\n## Related\n- test"
+                }
+            ),
+        }
+    )
+    runner_called = False
+
+    def runner(**kwargs: Any) -> dict[str, Any]:
+        nonlocal runner_called
+        runner_called = True
+        return {"final_state": {}}
+
+    report = daemon_once(
+        DaemonConfig(repos=(repo,), state_dir=tmp_path / "state", output_root=tmp_path / "runs"),
+        client=client,
+        feature_runner=runner,
+    )
+
+    assert report.outcome == "error"
+    assert "failed to park approved issue before execution" in report.detail
+    assert runner_called is False
+    assert len([call for call in client.calls if call[:2] == ["issue", "edit"]]) == 3
+
+
 def test_repo_name_for_issue_maps_core_repo_checkout_names() -> None:
     cases = {
         "AS215932/engineering-loop": "engineering-loop",
