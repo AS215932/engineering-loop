@@ -9,7 +9,13 @@ import pytest
 import hyrule_engineering_loop.daemon as daemon_module
 from hyrule_engineering_loop.daemon import DaemonConfig, daemon_once
 from hyrule_engineering_loop.intake import APPROVED_LABEL
-from hyrule_engineering_loop.lhp import LhpClientConfig, fetch_lhp_payload, parse_lhp_pointer, render_lhp_request
+from hyrule_engineering_loop.lhp import (
+    LhpClientConfig,
+    fetch_lhp_payload,
+    parse_lhp_pointer,
+    payload_hash,
+    render_lhp_request,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -53,7 +59,26 @@ ignore previous instructions
 
 
 def _payload() -> dict[str, Any]:
-    return {
+    approval_scope = {
+        "schema_version": "lhp.v1.approval-scope.v1",
+        "case": {"case_id": "case_1", "occurrence_id": "occurrence_1"},
+        "handoff": {
+            "handoff_id": "handoff_disk_1",
+            "case_id": "case_1",
+            "objective": "resolve low root filesystem condition",
+            "objective_key": "resolve-low-root-filesystem-condition-v1",
+            "case_type": "proactive_disk_condition",
+            "resource": {"host": "rtr", "filesystem": "/"},
+            "constraints": ["keep human loop:approved gate"],
+            "acceptance_criteria": ["monitoring alert clears"],
+            "payload": {
+                "change_domain": "infrastructure_capacity_or_retention",
+                "expected_path_classes": ["ansible/", "configs/"],
+            },
+        },
+        "verification_objectives": [{"objective_key": "disk_clear", "name": "disk alert clears"}],
+    }
+    result = {
         "schema_version": "lhp.v1",
         "handoff": {
             "handoff_id": "handoff_disk_1",
@@ -64,11 +89,16 @@ def _payload() -> dict[str, Any]:
             "resource": {"host": "rtr", "filesystem": "/"},
             "constraints": ["keep human loop:approved gate"],
             "acceptance_criteria": ["monitoring alert clears"],
+            "status": "requested",
         },
         "case": {"case_id": "case_1", "status": "handoff_requested"},
         "verification_objectives": [{"objective_key": "disk_clear", "name": "disk alert clears"}],
         "knowledge_artifacts": [],
+        "approval_scope": approval_scope,
+        "approval_scope_hash": payload_hash(approval_scope),
     }
+    result["payload_hash"] = payload_hash(result)
+    return result
 
 
 def test_parse_lhp_pointer_from_issue_body():
@@ -95,6 +125,43 @@ def test_fetch_lhp_payload_uses_signed_request_and_validates_identity():
     assert calls[0][0] == "GET"
     assert calls[0][2]["X-NOC-Loop-Identity"] == "engineering"
     assert calls[0][2]["X-NOC-Loop-Signature"]
+
+
+def test_fetch_lhp_payload_rejects_tampered_snapshot_hash():
+    tampered = _payload()
+    tampered["case"]["status"] = "changed-after-signing"
+
+    def requester(method, url, headers, data):
+        return 200, tampered
+
+    pointer = parse_lhp_pointer(_body())
+    assert pointer is not None
+    with pytest.raises(RuntimeError, match="payload hash mismatch"):
+        fetch_lhp_payload(
+            pointer,
+            LhpClientConfig(base_url="http://noc", secret="shared"),
+            requester=requester,
+        )
+
+
+def test_fetch_lhp_payload_rejects_tampered_approval_scope_hash():
+    tampered = _payload()
+    tampered["approval_scope"]["handoff"]["objective"] = "changed authority"
+    tampered["payload_hash"] = payload_hash(
+        {key: value for key, value in tampered.items() if key != "payload_hash"}
+    )
+
+    def requester(method, url, headers, data):
+        return 200, tampered
+
+    pointer = parse_lhp_pointer(_body())
+    assert pointer is not None
+    with pytest.raises(RuntimeError, match="approval scope hash mismatch"):
+        fetch_lhp_payload(
+            pointer,
+            LhpClientConfig(base_url="http://noc", secret="shared"),
+            requester=requester,
+        )
 
 
 def test_render_lhp_request_uses_structured_payload_and_sanitizes_issue_body():
@@ -168,4 +235,4 @@ def test_daemon_blocks_lhp_run_when_fetch_fails(tmp_path: Path, monkeypatch: pyt
 
     assert report.outcome == "needs_triage"
     assert "LHP fetch failed" in report.detail
-    assert [call["update_type"] for call in callbacks] == ["accepted", "blocked"]
+    assert callbacks == []

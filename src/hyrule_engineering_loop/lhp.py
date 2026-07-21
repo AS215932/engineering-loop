@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from typing import Any, Callable
 
 LHP_SCHEMA_VERSION = "lhp.v1"
+LHP_APPROVAL_SCOPE_SCHEMA_VERSION = "lhp.v1.approval-scope.v1"
 POINTER_RE = re.compile(r"```json\s*(\{.*?\"fetch_path\".*?\})\s*```", re.S)
 HANDOFF_MARKER_RE = re.compile(r"noc-lhp-handoff-id:([A-Za-z0-9_.:-]+)")
 CASE_MARKER_RE = re.compile(r"noc-case-id:([A-Za-z0-9_.:-]+)")
@@ -100,7 +101,27 @@ def fetch_lhp_payload(pointer: LhpPointer, config: LhpClientConfig, *, requester
     handoff = _dict_value(payload.get("handoff"))
     if handoff.get("handoff_id") != pointer.handoff_id or handoff.get("case_id") != pointer.case_id:
         raise RuntimeError("NOC LHP payload identity mismatch")
+    expected_payload_hash = _hash_token(payload.get("payload_hash"), field_name="payload_hash")
+    unhashed_payload = {key: value for key, value in payload.items() if key != "payload_hash"}
+    if payload_hash(unhashed_payload) != expected_payload_hash:
+        raise RuntimeError("NOC LHP payload hash mismatch")
+    approval_scope = validated_approval_scope(payload)
+    scope_handoff = _dict_value(approval_scope.get("handoff"))
+    if scope_handoff.get("handoff_id") != pointer.handoff_id or scope_handoff.get("case_id") != pointer.case_id:
+        raise RuntimeError("NOC LHP approval scope identity mismatch")
     return payload
+
+
+def validated_approval_scope(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate and return the immutable authorization projection."""
+
+    scope = _dict_value(payload.get("approval_scope"))
+    if scope.get("schema_version") != LHP_APPROVAL_SCOPE_SCHEMA_VERSION:
+        raise RuntimeError("NOC LHP approval scope schema mismatch")
+    expected = _hash_token(payload.get("approval_scope_hash"), field_name="approval_scope_hash")
+    if payload_hash(scope) != expected:
+        raise RuntimeError("NOC LHP approval scope hash mismatch")
+    return scope
 
 
 def render_lhp_request(payload: dict[str, Any], *, issue_url: str, issue_body: str) -> str:
@@ -166,7 +187,9 @@ def post_lhp_update(
 
 
 def payload_hash(value: Any) -> str:
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str).encode()
+    ).hexdigest()
 
 
 def safe_text(value: Any, *, limit: int = 1000) -> str:
@@ -235,3 +258,10 @@ def _list_value(value: Any) -> list[Any]:
 def _token(value: Any) -> str:
     text = str(value or "")
     return "".join(ch for ch in text if ch.isalnum() or ch in {"_", "-", ":", ".", "/"})[:180]
+
+
+def _hash_token(value: Any, *, field_name: str) -> str:
+    rendered = str(value or "").strip().lower()
+    if len(rendered) != 64 or any(ch not in "0123456789abcdef" for ch in rendered):
+        raise RuntimeError(f"NOC LHP {field_name} is missing or invalid")
+    return rendered
