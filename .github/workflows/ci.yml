@@ -30,7 +30,7 @@ jobs:
       - name: Install uv
         run: curl -LsSf https://astral.sh/uv/install.sh | sh
       - name: ruff
-        run: ~/.local/bin/uvx ruff check src tests
+        run: ~/.local/bin/uvx "ruff>=0.15,<0.16" check src tests
 
   mypy:
     runs-on: ubuntu-latest
