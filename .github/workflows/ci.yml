@@ -21,27 +21,36 @@ permissions:
 
 jobs:
   ruff:
-    runs-on: [self-hosted, linux, x64, hyrule-public-pr]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
       - name: Install uv
         run: curl -LsSf https://astral.sh/uv/install.sh | sh
       - name: ruff
-        run: ~/.local/bin/uvx ruff check src tests
+        run: ~/.local/bin/uvx "ruff>=0.15,<0.16" check src tests
 
   mypy:
-    runs-on: [self-hosted, linux, x64, hyrule-public-pr]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
       - name: Install uv
         run: curl -LsSf https://astral.sh/uv/install.sh | sh
       - name: mypy --strict
         run: ~/.local/bin/uv run --group dev mypy --strict src
 
   pytest:
-    runs-on: [self-hosted, linux, x64, hyrule-public-pr]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
       - name: Install uv
         run: curl -LsSf https://astral.sh/uv/install.sh | sh
       - name: pytest
@@ -55,9 +64,12 @@ jobs:
         run: TMPDIR=/tmp ~/.local/bin/uv run --group dev python -m pytest -q
 
   evals:
-    runs-on: [self-hosted, linux, x64, hyrule-public-pr]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
       - name: Install uv
         run: curl -LsSf https://astral.sh/uv/install.sh | sh
       - name: private evals
